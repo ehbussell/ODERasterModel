@@ -3,11 +3,12 @@
 import warnings
 import subprocess
 import os
+import inspect
 import bocop_utils
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from scipy import integrate
+import matplotlib.pyplot as plt
 from matplotlib import colors
 from matplotlib.animation import FuncAnimation
 
@@ -43,6 +44,8 @@ class RasterModel:
 
         self.ncells = np.prod(self.params['dimensions'])
 
+        # print(inspect.stack()[1:])
+
     def run_scheme(self, control_scheme):
         """Run ODE system forward using supplied control scheme."""
 
@@ -64,7 +67,8 @@ class RasterModel:
         res_dict = {'time': ts}
         for cell in range(self.ncells):
             states = [(x[2*cell], x[2*cell+1],
-                       self.params['N_individuals'][cell]) for x in xs]
+                       self.params['N_individuals'][cell], control_scheme(ts[i])[cell])
+                      for i, x in enumerate(xs)]
             res_dict['Cell' + str(cell)] = states
 
         results = pd.DataFrame(res_dict)
@@ -78,7 +82,7 @@ class RasterModel:
         set_BOCOP_params(self.params, folder=BOCOP_dir)
 
         if verbose is True:
-            subprocess.run([os.path.join(BOCOP_dir, "bocop.exe")], cwd=BOCOP_dir, shell=True)
+            subprocess.run([os.path.join(BOCOP_dir, "bocop.exe")], cwd=BOCOP_dir)
         else:
             subprocess.run([os.path.join(BOCOP_dir, "bocop.exe")],
                            cwd=BOCOP_dir, stdout=subprocess.DEVNULL,
@@ -89,7 +93,8 @@ class RasterModel:
         res_dict = {'time': self.params['times']}
         for cell in range(self.ncells):
             states = [(Xt(t)[2*cell], Xt(t)[2*cell+1],
-                       self.params['N_individuals'][cell]) for t in self.params['times']]
+                       self.params['N_individuals'][cell],
+                       Ut(t)[cell]) for t in self.params['times']]
             res_dict['Cell' + str(cell)] = states
 
         results = pd.DataFrame(res_dict)
@@ -123,107 +128,121 @@ class RasterRun:
     def plot(self):
         """Plot RasterRun results."""
 
+        video_length = 5
         frame_rate = 30
-        animation_length = 5
-        frame_interval = max(self.results['time']) / (animation_length * frame_rate)
         nframes = len(self.results)
 
-        fig = plt.figure(figsize=(7, 7))
-        ax = fig.add_axes([0, 0, 1, 1], frameon=False)
-        ax.set_xticks([])
-        ax.set_yticks([])
+        fig = plt.figure()
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+
+        ax2 = fig.add_subplot(1, 2, 2)
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+
+        fig.tight_layout()
 
         data_row = self.results.iloc[0]
-        colours = self.get_colours(data_row)
-        im = plt.imshow(colours, animated=True)
-        time_text = ax.text(0.02, 0.95, 'time = %.3f' % data_row['time'], transform=ax.transAxes,
-                            weight="bold", fontsize=12, bbox=dict(facecolor='white', alpha=0.6))
+        colours1, colours2 = self.get_colours(data_row)
+        im1 = ax1.imshow(colours1, animated=True)
+        im2 = ax2.imshow(colours2, animated=True)
+        time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_row['time'], transform=ax1.transAxes,
+                             weight="bold", fontsize=12, bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
             data_row = self.results.iloc[frame_number]
             new_time = data_row['time']
 
-            colours = self.get_colours(data_row)
-            im.set_array(colours)
+            colours1, colours2 = self.get_colours(data_row)
+            im1.set_array(colours1)
+            im2.set_array(colours2)
             time_text.set_text('time = %.3f' % new_time)
 
-            return im, time_text
+            return im1, im2, time_text
 
-        animation = FuncAnimation(fig, update, interval=1000/frame_rate, frames=nframes, blit=True,
-                                  repeat=False)
+        animation = FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
+                                  blit=True, repeat=False)
         plt.show()
 
-    def export(self):
+    def export(self, filestub):
         """Export results to file(s)."""
+        self.results.to_csv(filestub)
 
     def get_colours(self, data_row):
+        cmap = plt.get_cmap("Oranges")
+        cNorm = colors.Normalize(vmin=0, vmax=1)
+        scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
+
         ncells = np.prod(self.model_params['dimensions'])
-        colours = np.zeros((*self.model_params['dimensions'], 4))
+        colours1 = np.zeros((*self.model_params['dimensions'], 4))
+        colours2 = np.zeros((*self.model_params['dimensions'], 4))
 
         for i in range(ncells):
-            S, I, N = data_row['Cell' + str(i)]
+            S, I, N, f = data_row['Cell' + str(i)]
             x = i % self.model_params['dimensions'][0]
             y = int(i/self.model_params['dimensions'][0])
-            colours[x, y, :] = (I, S, 0, N)
+            colours1[x, y, :] = (I, S, 0, N)
+            colours2[x, y, :] = scalarMap.to_rgba(f)
 
-        return colours
+        return colours1, colours2
 
 
 def set_BOCOP_params(params, folder="BOCOP"):
 
-    allLines = []
+    all_lines = []
     # Dimensions
-    allLines.append("# Dimensions\n")
+    all_lines.append("# Dimensions\n")
     ncells = np.prod(params['dimensions'])
     dim_string = str(2*ncells) + " " + str(2*ncells) + " " + str(ncells) + " 0 0 1\n"
-    allLines.append(dim_string)
+    all_lines.append(dim_string)
 
     # Initial conditions
-    allLines.append("# Initial Conditions\n")
+    all_lines.append("# Initial Conditions\n")
     for cond in params['state_init']:
         init_string = str(cond) + " " + str(cond) + " equal\n"
-        allLines.append(init_string)
+        all_lines.append(init_string)
 
     # State bounds
-    allLines.append("# State Bounds\n")
+    all_lines.append("# State Bounds\n")
     for i in range(2*ncells):
-        allLines.append(">" + str(i) + ":1:" + str(i) + " 0 2e+020 lower\n")
+        all_lines.append(">" + str(i) + ":1:" + str(i) + " 0 2e+020 lower\n")
 
     # Control bounds
-    allLines.append("# Control Bounds\n")
+    all_lines.append("# Control Bounds\n")
     for i in range(ncells):
-        allLines.append("0 1 both\n")
+        all_lines.append("0 1 both\n")
 
     # Path consraint bounds
-    allLines.append("# Path Constraint Bounds\n")
-    allLines.append("-2e+020 " + str(params['max_budget_rate']) + " upper\n")
+    all_lines.append("# Path Constraint Bounds\n")
+    all_lines.append("-2e+020 " + str(params['max_budget_rate']) + " upper\n")
 
     with open(folder + "/problem.bounds", "w") as f:
-        f.writelines(allLines)
+        f.writelines(all_lines)
 
     with open(folder + "/problem.constants", "r") as f:
-        allLines = f.readlines()
+        all_lines = f.readlines()
 
-    allLines[5] = str(params['inf_rate']) + "\n"
-    allLines[6] = str(params['control_rate']) + "\n"
-    allLines[7] = str(params['dimensions'][0]) + "\n"
-    allLines[8] = str(params['dimensions'][1]) + "\n"
-    allLines[9] = str(params['scale']) + "\n"
+    all_lines[5] = str(params['inf_rate']) + "\n"
+    all_lines[6] = str(params['control_rate']) + "\n"
+    all_lines[7] = str(params['dimensions'][0]) + "\n"
+    all_lines[8] = str(params['dimensions'][1]) + "\n"
+    all_lines[9] = str(params['scale']) + "\n"
 
     with open(folder + "/problem.constants", "w") as f:
-        f.writelines(allLines)
+        f.writelines(all_lines)
 
     with open(folder + "/problem.def", "r") as f:
-        allLines = f.readlines()
+        all_lines = f.readlines()
 
-    nSteps = str(len(params['times']) - 1)
-    allLines[5] = "time.initial double " + str(params['times'][0]) + "\n"
-    allLines[6] = "time.final double " + str(params['times'][-1]) + "\n"
-    allLines[18] = "discretization.steps integer " + nSteps + "\n"
+    nsteps = str(len(params['times']) - 1)
+    all_lines[5] = "time.initial double " + str(params['times'][0]) + "\n"
+    all_lines[6] = "time.final double " + str(params['times'][-1]) + "\n"
+    all_lines[18] = "discretization.steps integer " + nsteps + "\n"
 
-    allLines[9] = "state.dimension integer " + str(2*ncells) + "\n"
-    allLines[10] = "control.dimension integer " + str(ncells) + "\n"
-    allLines[14] = "boundarycond.dimension integer " + str(2*ncells) + "\n"
+    all_lines[9] = "state.dimension integer " + str(2*ncells) + "\n"
+    all_lines[10] = "control.dimension integer " + str(ncells) + "\n"
+    all_lines[14] = "boundarycond.dimension integer " + str(2*ncells) + "\n"
 
     with open(folder + "/problem.def", "w") as f:
-        f.writelines(allLines)
+        f.writelines(all_lines)
