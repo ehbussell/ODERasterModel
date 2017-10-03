@@ -3,60 +3,91 @@
 import warnings
 import subprocess
 import os
-import inspect
-import bocop_utils
 import numpy as np
 import pandas as pd
 from scipy import integrate
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from matplotlib.animation import FuncAnimation
+import bocop_utils
+import simulator_utils
 
 
 class RasterModel:
-    """Class containing a particular model parameterisation, for running and optimising control.
+    """Class containing a particular SIR model parameterisation, for running and optimising control.
 
     Initialisation requires a dictionary of the following parameters:
+        'dimensions':       Dimensions of landscape raster,
         'inf_rate':         Infection Rate,
         'control_rate':     Control Rate,
         'max_budget_rate':  Maximum control expenditure,
         'coupling':         Transmission kernel,
-        'state_init':       Initial state [S_0,I_0...S_N-1, I_N-1],
-        'N_individuals'     Number of individuals in each cell [N_0...N_N-1],
         'times':            Times to solve for,
-        'dimensions':       (Nx, Ny) for dimensions of raster grid,
         'scale':            Kernel scale parameter,
+        'max_hosts':        Maximum number of host units per cell,
+    And optional arguments:
+        host_density_file   Name of ESRI ASCII raster file containing host density,
+                            default: "HostDensity_raster.txt"
+        initial_s_file      Name of ESRI ASCII raster file containing initial proportions in S,
+                            default: "S0_raster.txt"
+        initial_i_file      Name of ESRI ASCII raster file containing initial proportions in I,
+                            default: "I0_raster.txt"
      """
 
-    def __init__(self, params):
-        self.required_keys = ['inf_rate', 'control_rate', 'max_budget_rate', 'coupling',
-                              'state_init', 'N_individuals', 'times', 'dimensions', 'scale']
+    def __init__(self, params, host_density_file="HostDensity_raster.txt",
+                 initial_s_file="S0_raster.txt", initial_i_file="I0_raster.txt"):
+        self._required_keys = ['dimensions', 'inf_rate', 'control_rate', 'max_budget_rate',
+                               'coupling', 'times', 'scale', 'max_hosts']
 
-        for key in self.required_keys:
+        for key in self._required_keys:
             if key not in params:
                 raise KeyError("Parameter {0} not found!".format(key))
 
-        self.params = {k: params[k] for k in self.required_keys}
+        self.params = {k: params[k] for k in self._required_keys}
 
         for key in params:
-            if key not in self.required_keys:
+            if key not in self._required_keys:
                 warnings.warn("Unused parameter: {0}".format(key))
+
+        self.state_init = self._read_rasters(host_density_file, initial_s_file, initial_i_file)
 
         self.ncells = np.prod(self.params['dimensions'])
 
-        # print(inspect.stack()[1:])
+    def _read_rasters(self, host_density_file, initial_s_file, initial_i_file):
+        """Read initialisation rasters to set initial state and dimensions."""
+
+        host_raster = simulator_utils.read_raster(host_density_file)
+        s0_raster = simulator_utils.read_raster(initial_s_file)
+        i0_raster = simulator_utils.read_raster(initial_i_file)
+
+        assert host_raster.header_vals == s0_raster.header_vals == i0_raster.header_vals
+
+        self.params['dimensions'] = (host_raster.header_vals['nrows'], host_raster.header_vals['ncols'])
+
+        self._host_density = host_raster.array.flatten()
+
+        s_state_init = (host_raster.array.flatten() * s0_raster.array.flatten() *
+                        self.params['max_hosts'])
+        i_state_init = (host_raster.array.flatten() * i0_raster.array.flatten() *
+                        self.params['max_hosts'])
+
+        state_init = np.empty((s_state_init.size + i_state_init.size), dtype=s_state_init.dtype)
+        state_init[0::2] = s_state_init
+        state_init[1::2] = i_state_init
+
+        return state_init
 
     def run_scheme(self, control_scheme):
         """Run ODE system forward using supplied control scheme."""
 
         ode = integrate.ode(self.deriv)
         ode.set_integrator('vode', nsteps=1000, method='bdf')
-        ode.set_initial_value(self.params['state_init'],
+        ode.set_initial_value(self.state_init,
                               self.params['times'][0])
         ode.set_f_params(control_scheme)
 
         ts = [self.params['times'][0]]
-        xs = [self.params['state_init']]
+        xs = [self.state_init]
 
         for time in self.params['times'][1:]:
             ode.integrate(time)
@@ -67,7 +98,7 @@ class RasterModel:
         res_dict = {'time': ts}
         for cell in range(self.ncells):
             states = [(x[2*cell], x[2*cell+1],
-                       self.params['N_individuals'][cell], control_scheme(ts[i])[cell])
+                       self._host_density[cell], control_scheme(ts[i])[cell])
                       for i, x in enumerate(xs)]
             res_dict['Cell' + str(cell)] = states
 
@@ -76,10 +107,11 @@ class RasterModel:
         return RasterRun(self.params, results)
 
     def optimise(self, BOCOP_dir=None, verbose=True):
+        """Run BOCOP optimisation of model"""
 
         if BOCOP_dir is None:
             BOCOP_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "BOCOP")
-        set_BOCOP_params(self.params, folder=BOCOP_dir)
+        set_BOCOP_params(self.params, self.state_init, folder=BOCOP_dir)
 
         if verbose is True:
             subprocess.run([os.path.join(BOCOP_dir, "bocop.exe")], cwd=BOCOP_dir)
@@ -93,7 +125,7 @@ class RasterModel:
         res_dict = {'time': self.params['times']}
         for cell in range(self.ncells):
             states = [(Xt(t)[2*cell], Xt(t)[2*cell+1],
-                       self.params['N_individuals'][cell],
+                       self._host_density[cell],
                        Ut(t)[cell]) for t in self.params['times']]
             res_dict['Cell' + str(cell)] = states
 
@@ -102,9 +134,11 @@ class RasterModel:
         return RasterRun(self.params, results)
 
     def deriv(self, t, X, control):
+        """Calculate state derivative"""
+
         dX = np.zeros(len(X))
-        S_state = self.params['N_individuals']*X[0::2]
-        I_state = self.params['N_individuals']*X[1::2]
+        S_state = self._host_density*X[0::2]
+        I_state = self._host_density*X[1::2]
         control_val = control(t)
         infection_terms = self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state)
 
@@ -129,7 +163,6 @@ class RasterRun:
         """Plot RasterRun results."""
 
         video_length = 5
-        frame_rate = 30
         nframes = len(self.results)
 
         fig = plt.figure()
@@ -144,7 +177,7 @@ class RasterRun:
         fig.tight_layout()
 
         data_row = self.results.iloc[0]
-        colours1, colours2 = self.get_colours(data_row)
+        colours1, colours2 = self._get_colours(data_row)
         im1 = ax1.imshow(colours1, animated=True)
         im2 = ax2.imshow(colours2, animated=True)
         time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_row['time'], transform=ax1.transAxes,
@@ -154,7 +187,7 @@ class RasterRun:
             data_row = self.results.iloc[frame_number]
             new_time = data_row['time']
 
-            colours1, colours2 = self.get_colours(data_row)
+            colours1, colours2 = self._get_colours(data_row)
             im1.set_array(colours1)
             im2.set_array(colours2)
             time_text.set_text('time = %.3f' % new_time)
@@ -169,7 +202,8 @@ class RasterRun:
         """Export results to file(s)."""
         self.results.to_csv(filestub)
 
-    def get_colours(self, data_row):
+    def _get_colours(self, data_row):
+        """Calculate cell colours"""
         cmap = plt.get_cmap("Oranges")
         cNorm = colors.Normalize(vmin=0, vmax=1)
         scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
@@ -188,7 +222,8 @@ class RasterRun:
         return colours1, colours2
 
 
-def set_BOCOP_params(params, folder="BOCOP"):
+def set_BOCOP_params(params, state_init, folder="BOCOP"):
+    """Set up BOCOP initialisation files, ready for optimiation."""
 
     all_lines = []
     # Dimensions
@@ -199,7 +234,7 @@ def set_BOCOP_params(params, folder="BOCOP"):
 
     # Initial conditions
     all_lines.append("# Initial Conditions\n")
-    for cond in params['state_init']:
+    for cond in state_init:
         init_string = str(cond) + " " + str(cond) + " equal\n"
         all_lines.append(init_string)
 
