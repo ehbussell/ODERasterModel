@@ -77,7 +77,7 @@ class RasterModel:
 
         return state_init
 
-    def run_scheme(self, control_scheme):
+    def run_scheme(self, control_scheme, euler=False):
         """Run ODE system forward using supplied control scheme."""
 
         ode = integrate.ode(self.deriv)
@@ -89,24 +89,38 @@ class RasterModel:
         ts = [self.params['times'][0]]
         xs = [self.state_init]
 
-        for time in self.params['times'][1:]:
-            ode.integrate(time)
-            ts.append(ode.t)
-            xs.append(ode.y)
+        if euler:
+            for time in self.params['times'][1:]:
+                time_step = time - ts[-1]
+                new_x = xs[-1] + (time_step * self.deriv(ts[-1], xs[-1], control_scheme))
+                ts.append(time)
+                xs.append(new_x)
+        else:
+            for time in self.params['times'][1:]:
+                ode.integrate(time)
+                ts.append(ode.t)
+                xs.append(ode.y)
 
         # Create RasterRun object to hold result
-        res_dict = {'time': ts}
+        s_dict = {'time': ts}
+        i_dict = {'time': ts}
+        f_dict = {'time': ts}
+        
         for cell in range(self.ncells):
-            states = [(x[2*cell], x[2*cell+1],
-                       self._host_density[cell], control_scheme(ts[i])[cell])
-                      for i, x in enumerate(xs)]
-            res_dict['Cell' + str(cell)] = states
+            s_states = [x[2*cell] for i, x in enumerate(xs)]
+            i_states = [x[2*cell+1] for i, x in enumerate(xs)]
+            f_states = [control_scheme(ts[i])[cell] for i, x in enumerate(xs)]
+            s_dict['Cell' + str(cell)] = s_states
+            i_dict['Cell' + str(cell)] = i_states
+            f_dict['Cell' + str(cell)] = f_states
 
-        results = pd.DataFrame(res_dict)
+        results_s = pd.DataFrame(s_dict)
+        results_i = pd.DataFrame(i_dict)
+        results_f = pd.DataFrame(f_dict)
 
-        return RasterRun(self.params, results)
+        return RasterRun(self.params, (results_s, results_i, results_f))
 
-    def optimise(self, BOCOP_dir=None, verbose=True):
+    def optimise_BOCOP(self, BOCOP_dir=None, verbose=True):
         """Run BOCOP optimisation of model"""
 
         if BOCOP_dir is None:
@@ -122,16 +136,55 @@ class RasterModel:
 
         Xt, Lt, Ut = bocop_utils.readSolFile(BOCOP_dir + "/problem.sol")
 
-        res_dict = {'time': self.params['times']}
+        s_dict = {'time': self.params['times']}
+        i_dict = {'time': self.params['times']}
+        f_dict = {'time': self.params['times']}
+
         for cell in range(self.ncells):
-            states = [(Xt(t)[2*cell], Xt(t)[2*cell+1],
-                       self._host_density[cell],
-                       Ut(t)[cell]) for t in self.params['times']]
-            res_dict['Cell' + str(cell)] = states
+            s_states = [Xt(t)[2*cell] for t in self.params['times']]
+            i_states = [Xt(t)[2*cell+1] for t in self.params['times']]
+            f_states = [Ut(t)[cell] for t in self.params['times']]
+            s_dict['Cell' + str(cell)] = s_states
+            i_dict['Cell' + str(cell)] = i_states
+            f_dict['Cell' + str(cell)] = f_states
 
-        results = pd.DataFrame(res_dict)
+        results_s = pd.DataFrame(s_dict)
+        results_i = pd.DataFrame(i_dict)
+        results_f = pd.DataFrame(f_dict)
 
-        return RasterRun(self.params, results)
+        return RasterRun(self.params, (results_s, results_i, results_f))
+
+    def optimise_Ipopt(self, options=None, verbose=True):
+        """Run optimisation using Ipopt"""
+
+        Ipopt_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Ipopt")
+
+        cmd_options = [
+            str(self.params['inf_rate']),
+            str(self.params['control_rate']),
+            str(self.params['max_budget_rate']),
+            str(self.params['times'][-1]),
+            str(len(self.params['times'][:-1])),
+            str(self.params['max_hosts'])
+        ]
+
+        if options is not None:
+            with open("ipopt.opt", "w") as outfile:
+                for key, value in options.items():
+                    outfile.write(str(key) + " " + str(value) + "\n")
+
+        if verbose is True:
+            subprocess.run([os.path.join(Ipopt_dir, "RasterModel.exe"), *cmd_options])
+        else:
+            subprocess.run([os.path.join(Ipopt_dir, "RasterModel.exe"), *cmd_options],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+
+        results_s = pd.read_csv("output_S.csv")
+        results_i = pd.read_csv("output_I.csv")
+        results_f = pd.read_csv("output_f.csv")
+
+        return RasterRun(self.params, (results_s, results_i, results_f))
 
     def deriv(self, t, X, control):
         """Calculate state derivative"""
@@ -157,13 +210,13 @@ class RasterRun:
 
     def __init__(self, model_params, results):
         self.model_params = model_params
-        self.results = results
+        self.results_s, self.results_i, self.results_f = results
 
     def plot(self):
         """Plot RasterRun results."""
 
         video_length = 5
-        nframes = len(self.results)
+        nframes = len(self.results_s)
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1, 2, 1)
@@ -176,18 +229,20 @@ class RasterRun:
 
         fig.tight_layout()
 
-        data_row = self.results.iloc[0]
-        colours1, colours2 = self._get_colours(data_row)
+        data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0])
+        colours1, colours2 = self._get_colours(data_rows)
         im1 = ax1.imshow(colours1, animated=True)
         im2 = ax2.imshow(colours2, animated=True)
-        time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_row['time'], transform=ax1.transAxes,
-                             weight="bold", fontsize=12, bbox=dict(facecolor='white', alpha=0.6))
+        time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
+                             transform=ax1.transAxes, weight="bold", fontsize=12,
+                             bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
-            data_row = self.results.iloc[frame_number]
-            new_time = data_row['time']
+            data_rows = (self.results_s.iloc[frame_number], self.results_i.iloc[frame_number],
+                         self.results_f.iloc[frame_number])
+            new_time = data_rows[0]['time']
 
-            colours1, colours2 = self._get_colours(data_row)
+            colours1, colours2 = self._get_colours(data_rows)
             im1.set_array(colours1)
             im2.set_array(colours2)
             time_text.set_text('time = %.3f' % new_time)
@@ -200,9 +255,11 @@ class RasterRun:
 
     def export(self, filestub):
         """Export results to file(s)."""
-        self.results.to_csv(filestub)
+        self.results_s.to_csv(filestub + "_S.csv")
+        self.results_i.to_csv(filestub + "_I.csv")
+        self.results_f.to_csv(filestub + "_f.csv")
 
-    def _get_colours(self, data_row):
+    def _get_colours(self, data_rows):
         """Calculate cell colours"""
         cmap = plt.get_cmap("Oranges")
         cNorm = colors.Normalize(vmin=0, vmax=1)
@@ -213,10 +270,12 @@ class RasterRun:
         colours2 = np.zeros((*self.model_params['dimensions'], 4))
 
         for i in range(ncells):
-            S, I, N, f = data_row['Cell' + str(i)]
+            S = data_rows[0]['Cell' + str(i)]
+            I = data_rows[1]['Cell' + str(i)]
+            f = data_rows[2]['Cell' + str(i)]
             x = i % self.model_params['dimensions'][0]
             y = int(i/self.model_params['dimensions'][0])
-            colours1[x, y, :] = (I, S, 0, N)
+            colours1[x, y, :] = (I, S, 0, 1)
             colours2[x, y, :] = scalarMap.to_rgba(f)
 
         return colours1, colours2
