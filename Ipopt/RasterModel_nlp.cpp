@@ -76,7 +76,7 @@ bool RasterModel_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
         for (Index i=0; i<m_ncells; i++) {
             x_u[get_s_index(k, i)] = 2e19;
             x_u[get_i_index(k, i)] = 2e19;
-            x_u[get_f_index(k, i)] = 0.0;
+            x_u[get_f_index(k, i)] = 1.0;
         }
     }
 
@@ -402,19 +402,32 @@ bool RasterModel_NLP::eval_h(Index n, const Number* x, bool new_x,
             for (Index k=0; k<m_n_segments; k++){
                 // S continuity constraints
                 for (Index j=0; j<m_ncells; j++){
-                    iRow[count] = get_i_index(k, j);
-                    jCol[count] = get_s_index(k, i);
+                    if (i <= j){
+                        iRow[count] = get_i_index(k, j);
+                        jCol[count] = get_s_index(k, i);
+                    } else {
+                        iRow[count] = get_s_index(k, i);
+                        jCol[count] = get_i_index(k, j);
+                    }
+                    assert(iRow[count] > jCol[count]);
                     count++;
                 }
       
                 // I continuity constraints
                 for (Index j=0; j<m_ncells; j++){
-                    iRow[count] = get_i_index(k, j);
-                    jCol[count] = get_s_index(k, i);
+                    if (i <= j){
+                        iRow[count] = get_i_index(k, j);
+                        jCol[count] = get_s_index(k, i);
+                    } else {
+                        iRow[count] = get_s_index(k, i);
+                        jCol[count] = get_i_index(k, j);
+                    }
+                    assert(iRow[count] > jCol[count]);
                     count++;
                 }
                 iRow[count] = get_f_index(k, i);
                 jCol[count] = get_i_index(k, i);
+                assert(iRow[count] > jCol[count]);
                 count++;
             }
         }
