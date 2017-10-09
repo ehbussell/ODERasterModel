@@ -154,19 +154,33 @@ class RasterModel:
 
         return RasterRun(self.params, (results_s, results_i, results_f))
 
-    def optimise_Ipopt(self, options=None, verbose=True):
+    def optimise_Ipopt(self, options=None, verbose=True, method="euler"):
         """Run optimisation using Ipopt"""
 
         Ipopt_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Ipopt")
 
-        cmd_options = [
-            str(self.params['inf_rate']),
-            str(self.params['control_rate']),
-            str(self.params['max_budget_rate']),
-            str(self.params['times'][-1]),
-            str(len(self.params['times'][:-1])),
-            str(self.params['max_hosts'])
-        ]
+        if method == "euler":
+            cmd_options = [
+                str(0),
+                str(self.params['inf_rate']),
+                str(self.params['control_rate']),
+                str(self.params['max_budget_rate']),
+                str(self.params['times'][-1]),
+                str(len(self.params['times'][:-1])),
+                str(self.params['max_hosts'])
+            ]
+        elif method == "midpoint":
+            cmd_options = [
+                str(1),
+                str(self.params['inf_rate']),
+                str(self.params['control_rate']),
+                str(self.params['max_budget_rate']),
+                str(self.params['times'][-1]),
+                str(len(self.params['times'][:-1])),
+                str(self.params['max_hosts'])
+            ]
+        else:
+            raise ValueError("Unknown Method!")
 
         if options is not None:
             with open("ipopt.opt", "w") as outfile:
