@@ -14,7 +14,7 @@ EXE = RasterModel.exe
 
 # CHANGEME: Here is the name of all object files corresponding to the source
 #           code that you wrote in order to define the problem statement
-OBJS = RasterModel_main.o RasterModel_nlp.o Kernel.o RasterTools.o
+OBJS = RasterModel_main.o RasterModelEuler_nlp.o RasterModelMidpoint_nlp.o Kernel.o RasterTools.o
 
 # CHANGEME: Additional libraries
 ADDLIBS =

@@ -1,5 +1,6 @@
 #include "IpIpoptApplication.hpp"
-#include "RasterModel_nlp.hpp"
+#include "RasterModelEuler_nlp.hpp"
+#include "RasterModelMidpoint_nlp.hpp"
 #include "Kernel.hpp"
 #include "RasterTools.hpp"
 #include <fstream>
@@ -11,23 +12,30 @@ using namespace Ipopt;
 int main(int argc, char* argv[])
 {
     // Check correct number of arguments
-    if (argc != 7){
-        std::cerr << "Usage: " << argv[0] << " <BETA> <CONTROL RATE> <BUDGET> <FINAL TIME> <N SEGMENTS> <MAX HOSTS>" << std::endl;
+    if (argc != 8){
+        std::cerr << "Usage: " << argv[0] << " <METHOD> <BETA> <CONTROL RATE> <BUDGET> <FINAL TIME> <N SEGMENTS> <MAX HOSTS>" << std::endl;
         return 1;
     }
 
     // Initialise model variables
+    int discretise_method;
+    discretise_method = std::stoi(argv[1]);
+    if (discretise_method != 0 && discretise_method != 1){
+        std::cerr << "Method must be 0 for Euler, or 1 for Midpoint!" << discretise_method << std::endl;
+        return 1;
+    }
+
     double beta, control_rate, budget, final_time;
-    beta = std::stof(argv[1]);
-    control_rate = std::stof(argv[2]);
-    budget = std::stof(argv[3]);
-    final_time = std::stof(argv[4]);
+    beta = std::stof(argv[2]);
+    control_rate = std::stof(argv[3]);
+    budget = std::stof(argv[4]);
+    final_time = std::stof(argv[5]);
 
     int n_segments, max_hosts;
-    n_segments = std::stoi(argv[5]);
-    max_hosts = std::stoi(argv[6]);
+    n_segments = std::stoi(argv[6]);
+    max_hosts = std::stoi(argv[7]);
 
-    // Extract initial state from rasters and save dimensions TODO!!!
+    // Extract initial state from rasters and save dimensions
     Raster host_raster = readRaster("HostDensity_raster.txt");
     Raster s0_raster = readRaster("S0_raster.txt");
     Raster i0_raster = readRaster("I0_raster.txt");
@@ -42,11 +50,6 @@ int main(int argc, char* argv[])
         init_state.push_back(host_raster.m_array[i]*i0_raster.m_array[i]*max_hosts);
         init_state.push_back(0.0);
     }
-
-    // Create a new instance of nlp
-    //  (use a SmartPtr, not raw)
-    SmartPtr<RasterModel_NLP> mynlp = new RasterModel_NLP(
-        beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
 
     // Create a new instance of IpoptApplication
     //  (use a SmartPtr, not raw)
@@ -73,9 +76,24 @@ int main(int argc, char* argv[])
         return (int) status;
     }
 
+    // Create a new instance of nlp
+    //  (use a SmartPtr, not raw)
     // Ask Ipopt to solve the problem
-    status = app->OptimizeTNLP(mynlp);
+    if (discretise_method == 0){
+        std::cout << std::endl << std::endl << "Using Euler method" << std::endl;
 
+        SmartPtr<RasterModelEuler_NLP> mynlp = new RasterModelEuler_NLP(
+            beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+        status = app->OptimizeTNLP(mynlp);
+    }
+    if (discretise_method == 1){
+        std::cout << std::endl << std::endl << "Using Midpoint method" << std::endl;
+
+        SmartPtr<RasterModelMidpoint_NLP> mynlp = new RasterModelMidpoint_NLP(
+            beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+        status = app->OptimizeTNLP(mynlp);
+    }
+    
     if (status == Solve_Succeeded) {
         std::cout << std::endl << std::endl << "*** The problem solved!" << std::endl;
     }

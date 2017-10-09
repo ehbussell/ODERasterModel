@@ -1,4 +1,4 @@
-#include "RasterModel_nlp.hpp"
+#include "RasterModelEuler_NLP.hpp"
 #include "Kernel.hpp"
 #include <cassert>
 #include <iostream>
@@ -7,7 +7,7 @@
 using namespace Ipopt;
 
 // constructor
-RasterModel_NLP::RasterModel_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state)
+RasterModelEuler_NLP::RasterModelEuler_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state)
     : m_beta(beta),
     m_control_rate(control_rate),
     m_budget(budget),
@@ -21,27 +21,27 @@ RasterModel_NLP::RasterModel_NLP(double beta, double control_rate, double budget
 {}
 
 //destructor
-RasterModel_NLP::~RasterModel_NLP()
+RasterModelEuler_NLP::~RasterModelEuler_NLP()
 {}
 
 // Evaluate correct state indices
-int RasterModel_NLP::get_s_index(int time_idx, int space_idx)
+int RasterModelEuler_NLP::get_s_index(int time_idx, int space_idx)
 {
     return 3*space_idx + time_idx*(3 * m_ncells);
 }
 
-int RasterModel_NLP::get_i_index(int time_idx, int space_idx)
+int RasterModelEuler_NLP::get_i_index(int time_idx, int space_idx)
 {
     return 1 + 3*space_idx + time_idx*(3 * m_ncells);
 }
 
-int RasterModel_NLP::get_f_index(int time_idx, int space_idx)
+int RasterModelEuler_NLP::get_f_index(int time_idx, int space_idx)
 {
     return 2 + 3*space_idx + time_idx*(3 * m_ncells);
 }
 
 // returns the size of the problem
-bool RasterModel_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
+bool RasterModelEuler_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
                              Index& nnz_h_lag, IndexStyleEnum& index_style)
 {
     // Number of optimised variables
@@ -63,7 +63,7 @@ bool RasterModel_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
 }
 
 // returns the variable bounds
-bool RasterModel_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
+bool RasterModelEuler_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
                                 Index m, Number* g_l, Number* g_u)
     {
     // all variables have lower bounds of 0
@@ -101,7 +101,7 @@ bool RasterModel_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
 }
 
 // returns the initial point for the problem
-bool RasterModel_NLP::get_starting_point(Index n, bool init_x, Number* x,
+bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
                                    bool init_z, Number* z_L, Number* z_U,
                                    Index m, bool init_lambda,
                                    Number* lambda)
@@ -147,7 +147,7 @@ bool RasterModel_NLP::get_starting_point(Index n, bool init_x, Number* x,
 }
 
 // returns the value of the objective function
-bool RasterModel_NLP::eval_f(Index n, const Number* x, bool new_x, Number& obj_value)
+bool RasterModelEuler_NLP::eval_f(Index n, const Number* x, bool new_x, Number& obj_value)
 {
     obj_value = 0.0;
 
@@ -159,7 +159,7 @@ bool RasterModel_NLP::eval_f(Index n, const Number* x, bool new_x, Number& obj_v
 }
 
 // return the gradient of the objective function grad_{x} f(x)
-bool RasterModel_NLP::eval_grad_f(Index n, const Number* x, bool new_x, Number* grad_f)
+bool RasterModelEuler_NLP::eval_grad_f(Index n, const Number* x, bool new_x, Number* grad_f)
 {
     for (Index i=0; i<n; i++){
         grad_f[i] = 0;
@@ -173,7 +173,7 @@ bool RasterModel_NLP::eval_grad_f(Index n, const Number* x, bool new_x, Number* 
 }
 
 // return the value of the constraints: g(x)
-bool RasterModel_NLP::eval_g(Index n, const Number* x, bool new_x, Index m, Number* g)
+bool RasterModelEuler_NLP::eval_g(Index n, const Number* x, bool new_x, Index m, Number* g)
 {
     Index acc_idx = 0;
     double coupling_term;
@@ -231,7 +231,7 @@ bool RasterModel_NLP::eval_g(Index n, const Number* x, bool new_x, Index m, Numb
 }
 
 // return the structure or values of the jacobian
-bool RasterModel_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
+bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                            Index m, Index nele_jac, Index* iRow, Index *jCol,
                            Number* values)
 {
@@ -388,7 +388,7 @@ bool RasterModel_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
 }
 
 //return the structure or values of the hessian
-bool RasterModel_NLP::eval_h(Index n, const Number* x, bool new_x,
+bool RasterModelEuler_NLP::eval_h(Index n, const Number* x, bool new_x,
                        Number obj_factor, Index m, const Number* lambda,
                        bool new_lambda, Index nele_hess, Index* iRow,
                        Index* jCol, Number* values)
@@ -486,7 +486,7 @@ bool RasterModel_NLP::eval_h(Index n, const Number* x, bool new_x,
     return true;
 }
 
-void RasterModel_NLP::finalize_solution(SolverReturn status,
+void RasterModelEuler_NLP::finalize_solution(SolverReturn status,
                                   Index n, const Number* x, const Number* z_L, const Number* z_U,
                                   Index m, const Number* g, const Number* lambda,
                                   Number obj_value,

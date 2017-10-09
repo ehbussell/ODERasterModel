@@ -6,14 +6,14 @@ using namespace Ipopt;
  *  
  */
 
-class RasterModel_NLP : public TNLP
+class RasterModelEuler_NLP : public TNLP
 {
 public:
     /** default constructor */
-    RasterModel_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state);
+    RasterModelEuler_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state);
   
     /** default destructor */
-    virtual ~RasterModel_NLP();
+    virtual ~RasterModelEuler_NLP();
 
     double m_beta, m_control_rate, m_budget, m_final_time, m_time_step;
     int m_nrow, m_ncol, m_ncells, m_n_segments;
