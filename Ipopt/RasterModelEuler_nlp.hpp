@@ -11,6 +11,9 @@ class RasterModelEuler_NLP : public TNLP
 public:
     /** default constructor */
     RasterModelEuler_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state);
+
+    /** constructor with warm start point */
+    RasterModelEuler_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, std::string start_file_stub);
   
     /** default destructor */
     virtual ~RasterModelEuler_NLP();
@@ -18,6 +21,8 @@ public:
     double m_beta, m_control_rate, m_budget, m_final_time, m_time_step;
     int m_nrow, m_ncol, m_ncells, m_n_segments;
     std::vector<double> m_init_state;
+    bool m_warm_start;
+    std::string m_start_file_stub;
 
     int get_s_index(int time_idx, int space_idx);
     int get_i_index(int time_idx, int space_idx);

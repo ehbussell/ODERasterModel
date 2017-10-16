@@ -154,7 +154,7 @@ class RasterModel:
 
         return RasterRun(self.params, (results_s, results_i, results_f))
 
-    def optimise_Ipopt(self, options=None, verbose=True, method="euler"):
+    def optimise_Ipopt(self, options=None, verbose=True, method="euler", warm_start_stub=None):
         """Run optimisation using Ipopt"""
 
         Ipopt_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Ipopt")
@@ -181,6 +181,9 @@ class RasterModel:
             ]
         else:
             raise ValueError("Unknown Method!")
+
+        if warm_start_stub is not None:
+            cmd_options.append(warm_start_stub)
 
         if options is not None:
             with open("ipopt.opt", "w") as outfile:
@@ -289,7 +292,8 @@ class RasterRun:
             f = data_rows[2]['Cell' + str(i)]
             x = i % self.model_params['dimensions'][0]
             y = int(i/self.model_params['dimensions'][0])
-            colours1[x, y, :] = (I, S, 0, 1)
+            colours1[x, y, :] = (I/self.model_params['max_hosts'],
+                                 S/self.model_params['max_hosts'], 0, 1)
             colours2[x, y, :] = scalarMap.to_rgba(f)
 
         return colours1, colours2

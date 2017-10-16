@@ -17,8 +17,17 @@ RasterModelEuler_NLP::RasterModelEuler_NLP(double beta, double control_rate, dou
     m_init_state(init_state),
     m_n_segments(n_segments),
     m_time_step(final_time / n_segments),
-    m_ncells(nrow * ncol)
+    m_ncells(nrow * ncol),
+    m_warm_start(false)
 {}
+
+// constructor with warm start
+RasterModelEuler_NLP::RasterModelEuler_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, std::string start_file_stub)
+    : RasterModelEuler_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state)
+{
+    m_warm_start = true;
+    m_start_file_stub = start_file_stub;
+}
 
 //destructor
 RasterModelEuler_NLP::~RasterModelEuler_NLP()
@@ -121,27 +130,90 @@ bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
     Index acc_idx = 3*m_ncells;
     double coupling_term;
 
-    
-    for (Index k=0; k<m_n_segments; k++){
-        for (Index i=0; i<m_ncells; i++){
-            // Coupling term
-            coupling_term = 0.0;
-            for (Index j=0; j<m_ncells; j++){
-                coupling_term += kernel(i, j, m_nrow, m_ncol) * x[get_i_index(k, j)];
+    if (m_warm_start == false){
+        // No warm start - initialise using euler method with no control
+        for (Index k=0; k<m_n_segments; k++){
+            for (Index i=0; i<m_ncells; i++){
+                // Coupling term
+                coupling_term = 0.0;
+                for (Index j=0; j<m_ncells; j++){
+                    coupling_term += kernel(i, j, m_nrow, m_ncol) * x[get_i_index(k, j)];
+                }
+                // Next S
+                x[get_s_index(k+1, i)] = x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step);
+                acc_idx++;
+                // Next I
+                x[get_i_index(k+1, i)] = x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step;
+                acc_idx++;
+                // Next f
+                x[get_f_index(k+1, i)] = 0.0;
+                acc_idx++;
             }
-            // Next S
-            x[get_s_index(k+1, i)] = x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step);
-            acc_idx++;
-            // Next I
-            x[get_i_index(k+1, i)] = x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step;
-            acc_idx++;
-            // Next f
-            x[get_f_index(k+1, i)] = 0.0;
-            acc_idx++;
         }
+
+        assert(acc_idx == n);
+    } else {
+        // Initialise from previous results files
+        std::string tmp;
+        // Read S input file
+        std::ifstream inputFile(m_start_file_stub + "_S.csv");
+        if (inputFile){
+            std::getline(inputFile, tmp);
+
+            for (Index k=0; k<(m_n_segments+1); k++){
+                std::getline(inputFile, tmp, ',');
+                for (Index i=0; i<m_ncells; i++){
+                    std::getline(inputFile, tmp, ',');
+                    x[get_s_index(k, i)] = std::stod(tmp);
+                }
+            }
+
+            inputFile.close();
+        } else {
+            std::cerr << "Cannot open start file for reading - " << m_start_file_stub + "_S.csv" << std::endl;
+            return false;
+        }
+
+        // Read I input file
+        inputFile.open(m_start_file_stub + "_I.csv");
+        if (inputFile){
+            std::getline(inputFile, tmp);
+
+            for (Index k=0; k<(m_n_segments+1); k++){
+                std::getline(inputFile, tmp, ',');
+                for (Index i=0; i<m_ncells; i++){
+                    std::getline(inputFile, tmp, ',');
+                    x[get_i_index(k, i)] = std::stod(tmp);
+                }
+            }
+
+            inputFile.close();
+        } else {
+            std::cerr << "Cannot open start file for reading - " << m_start_file_stub + "_I.csv" << std::endl;
+            return false;
+        }
+
+        // Read f input file
+        inputFile.open(m_start_file_stub + "_f.csv");
+        if (inputFile){
+            std::getline(inputFile, tmp);
+
+            for (Index k=0; k<(m_n_segments+1); k++){
+                std::getline(inputFile, tmp, ',');
+                for (Index i=0; i<m_ncells; i++){
+                    std::getline(inputFile, tmp, ',');
+                    x[get_f_index(k, i)] = std::stod(tmp);
+                }
+            }
+
+            inputFile.close();
+        } else {
+            std::cerr << "Cannot open start file for reading - " << m_start_file_stub + "_f.csv" << std::endl;
+            return false;
+        }
+    
     }
 
-    assert(acc_idx == n);
 
     return true;
 }

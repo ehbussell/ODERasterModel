@@ -12,8 +12,8 @@ using namespace Ipopt;
 int main(int argc, char* argv[])
 {
     // Check correct number of arguments
-    if (argc != 8){
-        std::cerr << "Usage: " << argv[0] << " <METHOD> <BETA> <CONTROL RATE> <BUDGET> <FINAL TIME> <N SEGMENTS> <MAX HOSTS>" << std::endl;
+    if (argc != 8 && argc != 9){
+        std::cerr << "Usage: " << argv[0] << " <METHOD> <BETA> <CONTROL RATE> <BUDGET> <FINAL TIME> <N SEGMENTS> <MAX HOSTS> <START FILE STUB>" << std::endl;
         return 1;
     }
 
@@ -26,10 +26,10 @@ int main(int argc, char* argv[])
     }
 
     double beta, control_rate, budget, final_time;
-    beta = std::stof(argv[2]);
-    control_rate = std::stof(argv[3]);
-    budget = std::stof(argv[4]);
-    final_time = std::stof(argv[5]);
+    beta = std::stod(argv[2]);
+    control_rate = std::stod(argv[3]);
+    budget = std::stod(argv[4]);
+    final_time = std::stod(argv[5]);
 
     int n_segments, max_hosts;
     n_segments = std::stoi(argv[6]);
@@ -81,16 +81,26 @@ int main(int argc, char* argv[])
     // Ask Ipopt to solve the problem
     if (discretise_method == 0){
         std::cout << std::endl << std::endl << "Using Euler method" << std::endl;
-
-        SmartPtr<RasterModelEuler_NLP> mynlp = new RasterModelEuler_NLP(
-            beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+        SmartPtr<RasterModelEuler_NLP> mynlp;
+        if (argc == 9){
+            mynlp = new RasterModelEuler_NLP(
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, argv[8]);
+        } else {
+            mynlp = new RasterModelEuler_NLP(
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+        }
         status = app->OptimizeTNLP(mynlp);
     }
     if (discretise_method == 1){
         std::cout << std::endl << std::endl << "Using Midpoint method" << std::endl;
-
-        SmartPtr<RasterModelMidpoint_NLP> mynlp = new RasterModelMidpoint_NLP(
-            beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+        SmartPtr<RasterModelMidpoint_NLP> mynlp;
+        if (argc == 9){
+            mynlp = new RasterModelMidpoint_NLP(
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, argv[8]);
+        } else {
+            mynlp = new RasterModelMidpoint_NLP(
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+        }
         status = app->OptimizeTNLP(mynlp);
     }
     
