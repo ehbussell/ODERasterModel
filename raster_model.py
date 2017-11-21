@@ -8,7 +8,7 @@ import pandas as pd
 from scipy import integrate
 import matplotlib.pyplot as plt
 from matplotlib import colors
-from matplotlib.animation import FuncAnimation
+from matplotlib import animation
 import bocop_utils
 import simulator_utils
 
@@ -99,7 +99,7 @@ class RasterModel:
             for time in self.params['times'][1:]:
                 ode.integrate(time)
                 ts.append(ode.t)
-                xs.append(ode.y)
+                xs.append(np.clip(ode.y, 0, None))
 
         # Create RasterRun object to hold result
         s_dict = {'time': ts}
@@ -229,8 +229,13 @@ class RasterRun:
         self.model_params = model_params
         self.results_s, self.results_i, self.results_f = results
 
+    def plot_budget(self):
+        """Plot budget expenditure over time."""
+        # TODO implement budget plot
+        pass
+
     def plot(self):
-        """Plot RasterRun results."""
+        """Plot RasterRun results as video."""
 
         video_length = 5
         nframes = len(self.results_s)
@@ -248,8 +253,8 @@ class RasterRun:
 
         data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0])
         colours1, colours2 = self._get_colours(data_rows)
-        im1 = ax1.imshow(colours1, animated=True)
-        im2 = ax2.imshow(colours2, animated=True)
+        im1 = ax1.imshow(colours1, animated=True, origin="upper")
+        im2 = ax2.imshow(colours2, animated=True, origin="upper")
         time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
                              transform=ax1.transAxes, weight="bold", fontsize=12,
                              bbox=dict(facecolor='white', alpha=0.6))
@@ -266,9 +271,56 @@ class RasterRun:
 
             return im1, im2, time_text
 
-        animation = FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
+        im_ani = animation.FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
                                   blit=True, repeat=False)
+
         plt.show()
+
+    def export_video(self, filename, video_length=5):
+        """Export video as html"""
+
+        fps = 30
+        nframes = fps * video_length
+        interval = max([1, int(len(self.results_s) / nframes)])
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+
+        ax2 = fig.add_subplot(1, 2, 2)
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+
+        fig.tight_layout()
+
+        data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0])
+        colours1, colours2 = self._get_colours(data_rows)
+        im1 = ax1.imshow(colours1, animated=True, origin="upper")
+        im2 = ax2.imshow(colours2, animated=True, origin="upper")
+        time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
+                             transform=ax1.transAxes, weight="bold", fontsize=12,
+                             bbox=dict(facecolor='white', alpha=0.6))
+
+        def update(frame_number):
+            data_rows = (self.results_s.iloc[frame_number*interval], self.results_i.iloc[frame_number*interval],
+                         self.results_f.iloc[frame_number*interval])
+            new_time = data_rows[0]['time']
+
+            colours1, colours2 = self._get_colours(data_rows)
+            im1.set_array(colours1)
+            im2.set_array(colours2)
+            time_text.set_text('time = %.3f' % new_time)
+
+            return im1, im2, time_text
+
+        im_ani = animation.FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
+                                  blit=True, repeat=False)
+
+        plt.rcParams['animation.ffmpeg_path'] = 'C:\\Users\\Elliott\\Documents\\ffmpeg-20171107-ce52e43-win64-static\\bin\\ffmpeg.exe'
+        Writer = animation.writers['html']
+        writer = Writer(fps=30, bitrate=500)
+        im_ani.save(filename+".html", writer=writer)
 
     def export(self, filestub):
         """Export results to file(s)."""
@@ -290,11 +342,15 @@ class RasterRun:
             S = data_rows[0]['Cell' + str(i)]
             I = data_rows[1]['Cell' + str(i)]
             f = data_rows[2]['Cell' + str(i)]
-            x = i % self.model_params['dimensions'][0]
-            y = int(i/self.model_params['dimensions'][0])
-            colours1[x, y, :] = (I/self.model_params['max_hosts'],
-                                 S/self.model_params['max_hosts'], 0, 1)
-            colours2[x, y, :] = scalarMap.to_rgba(f)
+            row = i % self.model_params['dimensions'][1]
+            col = int(i/self.model_params['dimensions'][1])
+            colours1[col, row, :] = (I/self.model_params['max_hosts'], S/self.model_params['max_hosts'], 0, 1)
+            # if I > 0:
+            #     colours1[col, row, :] = (I/self.model_params['max_hosts'], 0, 0, 1)
+            # else:
+            #     colours1[col, row, :] = (0, S/self.model_params['max_hosts'], 0, 1)
+
+            colours2[col, row, :] = scalarMap.to_rgba(f)
 
         return colours1, colours2
 
