@@ -7,7 +7,7 @@ import theano
 from IndividualSimulator.utilities import output_data
 
 def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, nsims=None,
-                    mcmc_params=None, output_stub="RasterFit", lik_func=None):
+                    mcmc_params=None, output_stub="RasterFit", likelihood_func=None):
     """Run MCMC to find parameter distributions for raster model.
 
     Required arguments:
@@ -21,27 +21,26 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
                             output.
 
     Optional arguments:
-        nsims:          Number of simulations from data to use.  If set to None (default) then all
-                        runs in the simulation output will be used.
-        mcmc_params:    Dictionary of tuning parameters to use for MCMC run.  Contains:
-                            iters:  Number of iterations in MCMC routine (default 1100).
-        output_stub:    Path for output files: logs and parameter traces.
-        lik_func:       Log likelihood function. If None this is generated from data.
+        nsims:              Number of simulations from data to use.  If set to None (default) then
+                            all runs in the simulation output will be used.
+        mcmc_params:        Dictionary of tuning parameters to use for MCMC run.  Contains:
+                                iters:  Number of iterations in MCMC routine (default 1100).
+        output_stub:        Path for output files: logs and parameter traces.
+        likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
+                            then this is generated.
     """
 
-    sim_params = output_data.extract_params(log_file=data_stub + ".log")
-    final_time = sim_params['FinalTime']
+    # TODO adjust to use full/partial precomputation
+
+    if likelihood_func is None:
+        print("Precomputing likelihood function")
+        likelihood_func = precompute_loglik(data_stub, nsims, target_raster, end_time=None,
+                                            ignore_outside_raster=True, precompute_level="full")
 
     if mcmc_params is None:
-        mcmc_params = {'iters':1100}
+        mcmc_params = {'iters':1000}
 
     basic_model = pm.Model()
-
-    if lik_func is None:
-        distances, const_factors, matrix = create_loglik_func(
-            data_stub, nsims, target_raster, final_time, ignore_outside_raster=True)
-    else:
-        distances, const_factors, matrix = lik_func
 
     with basic_model:
         param_dists = []
@@ -54,14 +53,10 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
             else:
                 raise ValueError("Invalid kernel parameter options!")
 
-        kernel_vals = kernel_generator(param_dists)(distances)
+        kernel_vals = kernel_generator(param_dists)(likelihood_func.distances)
         params = theano.tensor.concatenate([[1.0], kernel_vals])
 
-        def log_likelihood(data):
-            log_lik = 0.0
-            log_lik += pm.math.sum(pm.math.dot(const_factors, params))
-            log_lik += pm.math.sum(pm.math.log(pm.math.dot(matrix, params)))
-            return log_lik
+        log_likelihood = likelihood_func.get_function(params)
 
         y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
 
@@ -72,6 +67,7 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
     return trace
 
 def get_cell(host_row, raster_header):
+    # TODO use raster tools instead
     x = host_row['posX']
     y = host_row['posY']
 
@@ -92,9 +88,34 @@ def get_cell(host_row, raster_header):
     return cell_id
 
 
-def create_loglik_func(data_stub, nsims, raster_header, end_time=None,
-                       ignore_outside_raster=False, output_freq=10):
-    """Generate log likelihood function given simulation data."""
+def precompute_loglik(data_stub, nsims, raster_header, end_time=None,
+                      ignore_outside_raster=False, output_freq=10, precompute_level="full"):
+    """Generate log likelihood function given simulation data.
+
+    If precompute_level is 'full': constant factors and full matrix are calculated. This can be slow
+        and require large amounts of memory for large grid sizes, but will minimise likelihood
+        calculation times.
+
+    If precompute_level is 'partial': constant factors are still calculated, and function is setup
+        to calculate the likelihood on-the-fly, recalculating infectious pressures at each event.
+        This will be slower but requires less precalculation and memory.
+    """
+
+    if precompute_level == "full":
+        return _precompute_full(data_stub, nsims, raster_header, end_time, ignore_outside_raster,
+                                output_freq)
+    elif precompute_level == "partial":
+        return _precompute_partial(data_stub, nsims, raster_header, end_time, ignore_outside_raster,
+                                   output_freq)
+    else:
+        raise ValueError("Unrecognised precompute level!")
+
+
+def _precompute_full(data_stub, nsims, raster_header, end_time=None,
+                     ignore_outside_raster=False, output_freq=10):
+    """Fully precompute the raster likelihood function."""
+
+    # TODO tidy up this function - maybe use create_cell_data from simulator utilities
 
     nrows = raster_header['nrows']
     ncols = raster_header['ncols']
@@ -154,7 +175,6 @@ def create_loglik_func(data_stub, nsims, raster_header, end_time=None,
 
     print("Finished relative position map and initial change term")
 
-
     for x in range(nsims):
         # For each simulation run
         sim = data[x]['event_data']
@@ -202,3 +222,74 @@ def create_loglik_func(data_stub, nsims, raster_header, end_time=None,
     distances = np.array([np.sqrt(x*x + y*y) for x, y in positions])
 
     return distances, const_factors, matrix
+
+
+def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
+                        ignore_outside_raster=False, output_freq=10):
+    """Partially precompute the raster likelihood function."""
+
+    raise NotImplementedError
+
+
+class LikelihoodFunction:
+    """Class holding precomputed likelihood information."""
+    # TODO implement partial computation
+
+    def __init__(self, precompute_level, data):
+        if precompute_level == "full":
+            self.precompute_level = "full"
+            self.const_factors = data['const_factors']
+            self.matrix = data['matrix']
+            self.distances = data['distances']
+
+        elif precompute_level == "partial":
+            self.precompute_level = "partial"
+            raise NotImplementedError
+
+        else:
+            raise ValueError("Unrecognised precomputation level!")
+
+    @classmethod
+    def from_file(cls, filename):
+        """Initialise from .npz file."""
+
+        loaded = np.load(filename)
+        return cls(loaded['level'], loaded)
+
+    def eval_loglik(self, kernel):
+        """Compute the data likelihood for the given kernel function."""
+
+        if self.precompute_level == "full":
+            kernel_vals = kernel(self.distances)
+
+            log_lik = np.sum(np.dot(self.const_factors, kernel_vals))
+            log_lik += np.sum(np.log(np.dot(self.matrix, kernel_vals)))
+
+            return log_lik
+
+        elif self.precompute_level == "partial":
+            raise NotImplementedError
+
+    def get_function(self, params):
+        """Get log likelihood function for use with pymc3."""
+
+        if self.precompute_level == "full":
+            def log_likelihood(required_argument):
+                log_lik = 0.0
+                log_lik += pm.math.sum(pm.math.dot(self.const_factors, params))
+                log_lik += pm.math.sum(pm.math.log(pm.math.dot(self.matrix, params)))
+                return log_lik
+
+            return log_likelihood
+
+    def save(self, savefile, identifier=None):
+        """Save likelihood precalculation to .npz file."""
+
+        if self.precompute_level == "full":
+            np.savez_compressed(savefile, level="full", identifier=identifier,
+                                distances=self.distances, const_factors=self.const_factors,
+                                matrix=self.matrix)
+
+        elif self.precompute_level == "partial":
+            raise NotImplementedError
+            np.savez_compressed(savefile, level="partial")
