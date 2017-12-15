@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 from matplotlib import animation
 import bocop_utils
-import simulator_utils
+import raster_tools
 
 
 class RasterModel:
@@ -55,13 +55,14 @@ class RasterModel:
     def _read_rasters(self, host_density_file, initial_s_file, initial_i_file):
         """Read initialisation rasters to set initial state and dimensions."""
 
-        host_raster = simulator_utils.read_raster(host_density_file)
-        s0_raster = simulator_utils.read_raster(initial_s_file)
-        i0_raster = simulator_utils.read_raster(initial_i_file)
+        host_raster = raster_tools.RasterData.from_file(host_density_file)
+        s0_raster = raster_tools.RasterData.from_file(initial_s_file)
+        i0_raster = raster_tools.RasterData.from_file(initial_i_file)
 
         assert host_raster.header_vals == s0_raster.header_vals == i0_raster.header_vals
 
-        self.params['dimensions'] = (host_raster.header_vals['nrows'], host_raster.header_vals['ncols'])
+        self.params['dimensions'] = (host_raster.header_vals['nrows'],
+                                     host_raster.header_vals['ncols'])
 
         self._host_density = host_raster.array.flatten()
 

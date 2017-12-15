@@ -5,6 +5,7 @@ import numpy as np
 import pymc3 as pm
 import theano
 from IndividualSimulator.utilities import output_data
+import raster_tools
 
 def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, nsims=None,
                     mcmc_params=None, output_stub="RasterFit", likelihood_func=None):
@@ -65,27 +66,6 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
         trace = pm.sample(mcmc_params['iters'], progressbar=True, start=start)
 
     return trace
-
-def get_cell(host_row, raster_header):
-    # TODO use raster tools instead
-    x = host_row['posX']
-    y = host_row['posY']
-
-    cellsize = raster_header['cellsize']
-
-    col = (x - raster_header['xllcorner']) / cellsize
-    row = ((raster_header['nrows'] * cellsize) -
-           (y - raster_header['yllcorner'])) / cellsize
-
-    if col < 0 or col >= raster_header['ncols']:
-        return -1
-
-    if row < 0 or row >= raster_header['nrows']:
-        return -1
-
-    cell_id = int(col) + (int(row) * raster_header['ncols'])
-
-    return cell_id
 
 
 def precompute_loglik(data_stub, nsims, raster_header, end_time=None,
@@ -149,7 +129,8 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
     # Construct initial state
     for index, host in data[0]['host_data'].iterrows():
         # find cell index
-        cell = get_cell(host, raster_header)
+        cell = raster_tools.find_position_in_raster(
+            (host['posX'], host['posY']), raster_header=raster_header, index=True)
         if cell == -1:
             if ignore_outside_raster:
                 continue
