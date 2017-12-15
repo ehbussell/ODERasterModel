@@ -14,7 +14,7 @@ import simulator_utils
 
 
 class RasterModel:
-    """Class containing a particular SIR model parameterisation, for running and optimising control.
+    """Class containing a particular SIR model parametrisation, for running and optimising control.
 
     Initialisation requires a dictionary of the following parameters:
         'dimensions':       Dimensions of landscape raster,
@@ -23,7 +23,6 @@ class RasterModel:
         'max_budget_rate':  Maximum control expenditure,
         'coupling':         Transmission kernel,
         'times':            Times to solve for,
-        'scale':            Kernel scale parameter,
         'max_hosts':        Maximum number of host units per cell,
     And optional arguments:
         host_density_file   Name of ESRI ASCII raster file containing host density,
@@ -37,7 +36,7 @@ class RasterModel:
     def __init__(self, params, host_density_file="HostDensity_raster.txt",
                  initial_s_file="S0_raster.txt", initial_i_file="I0_raster.txt"):
         self._required_keys = ['dimensions', 'inf_rate', 'control_rate', 'max_budget_rate',
-                               'coupling', 'times', 'scale', 'max_hosts']
+                               'coupling', 'times', 'max_hosts']
 
         for key in self._required_keys:
             if key not in params:
@@ -207,8 +206,8 @@ class RasterModel:
         """Calculate state derivative"""
 
         dX = np.zeros(len(X))
-        S_state = self._host_density*X[0::2]
-        I_state = self._host_density*X[1::2]
+        S_state = X[0::2]
+        I_state = X[1::2]
         control_val = control(t)
         infection_terms = self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state)
 
@@ -229,16 +228,32 @@ class RasterRun:
         self.model_params = model_params
         self.results_s, self.results_i, self.results_f = results
 
+        val_cols = [c for c in self.results_i.columns if c.startswith('Cell')]
+        print(self.results_i[val_cols].max().max())
+        self.max_budget_used = self.results_i[val_cols].max().max()
+
     def plot_budget(self):
         """Plot budget expenditure over time."""
         # TODO implement budget plot
         pass
 
-    def plot(self):
+    def get_plot(self, time, ax_state, ax_control):
+        idx = int(self.results_s.index[self.results_s['time'] == time][0])
+        print(idx)
+        data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx], self.results_f.iloc[idx]*self.results_i.iloc[idx])
+        colours1, colours2 = self._get_colours(data_rows)
+        im1 = ax_state.imshow(colours1, origin="upper")
+        im2 = ax_control.imshow(colours2, origin="upper")
+        time_text = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
+                             transform=ax_state.transAxes, weight="bold", fontsize=12,
+                             bbox=dict(facecolor='white', alpha=0.6))
+
+    def plot(self, video_length=5):
         """Plot RasterRun results as video."""
 
-        video_length = 5
-        nframes = len(self.results_s)
+        fps = 30
+        nframes = fps * video_length
+        interval = max([1, int(len(self.results_s) / nframes)])
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1, 2, 1)
@@ -251,7 +266,7 @@ class RasterRun:
 
         fig.tight_layout()
 
-        data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0])
+        data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0]*self.results_i.iloc[0])
         colours1, colours2 = self._get_colours(data_rows)
         im1 = ax1.imshow(colours1, animated=True, origin="upper")
         im2 = ax2.imshow(colours2, animated=True, origin="upper")
@@ -260,8 +275,8 @@ class RasterRun:
                              bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
-            data_rows = (self.results_s.iloc[frame_number], self.results_i.iloc[frame_number],
-                         self.results_f.iloc[frame_number])
+            data_rows = (self.results_s.iloc[frame_number*interval], self.results_i.iloc[frame_number*interval],
+                         self.results_f.iloc[frame_number*interval]*self.results_i.iloc[frame_number*interval])
             new_time = data_rows[0]['time']
 
             colours1, colours2 = self._get_colours(data_rows)
@@ -331,26 +346,26 @@ class RasterRun:
     def _get_colours(self, data_rows):
         """Calculate cell colours"""
         cmap = plt.get_cmap("Oranges")
-        cNorm = colors.Normalize(vmin=0, vmax=1)
+        cNorm = colors.Normalize(vmin=0, vmax=self.max_budget_used)
         scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
 
         ncells = np.prod(self.model_params['dimensions'])
-        colours1 = np.zeros((*self.model_params['dimensions'], 4))
-        colours2 = np.zeros((*self.model_params['dimensions'], 4))
+        colours1 = np.zeros((self.model_params['dimensions'][0], self.model_params['dimensions'][1], 4))
+        colours2 = np.zeros((self.model_params['dimensions'][0], self.model_params['dimensions'][1], 4))
 
         for i in range(ncells):
             S = data_rows[0]['Cell' + str(i)]
             I = data_rows[1]['Cell' + str(i)]
-            f = data_rows[2]['Cell' + str(i)]
-            row = i % self.model_params['dimensions'][1]
-            col = int(i/self.model_params['dimensions'][1])
-            colours1[col, row, :] = (I/self.model_params['max_hosts'], S/self.model_params['max_hosts'], 0, 1)
+            B = data_rows[2]['Cell' + str(i)]
+            col = i % self.model_params['dimensions'][1]
+            row = int(i/self.model_params['dimensions'][1])
+            colours1[row, col, :] = (I/self.model_params['max_hosts'], S/self.model_params['max_hosts'], 0, 1)
             # if I > 0:
             #     colours1[col, row, :] = (I/self.model_params['max_hosts'], 0, 0, 1)
             # else:
             #     colours1[col, row, :] = (0, S/self.model_params['max_hosts'], 0, 1)
 
-            colours2[col, row, :] = scalarMap.to_rgba(f)
+            colours2[row, col, :] = scalarMap.to_rgba(B)
 
         return colours1, colours2
 
