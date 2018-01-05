@@ -57,7 +57,11 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
         kernel_vals = kernel_generator(*param_dists)(likelihood_func.distances)
         params = theano.tensor.concatenate([[1.0], kernel_vals])
 
-        log_likelihood = likelihood_func.get_function(params)
+        if likelihood_func.precompute_level == "full":
+            log_likelihood = likelihood_func.get_function(params)
+        elif likelihood_func.precompute_level == "partial":
+            log_likelihood = likelihood_func.get_function(
+                params, kernel_generator(*param_dists)(likelihood_func.rel_pos_array[:, :]))
 
         y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
 
@@ -315,7 +319,6 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
                     const_factors[1+rel_pos] -= state[k, 1]*state[j, 0]*(end_time - previous_time)
         all_inf_cell_ids.append(np.array(inf_cell_ids))
 
-
     positions = [np.unravel_index(x, (nrows, ncols)) for x in range(kernel_length)]
     distances = np.array([np.sqrt(x*x + y*y) for x, y in positions])
 
@@ -375,25 +378,23 @@ class LikelihoodFunction:
 
             log_lik = np.sum(np.dot(self.const_factors, kernel_vals))
 
-
             for run in range(len(self.all_inf_cell_ids)):
                 # calc initial rates
                 rates = np.zeros(len(self.initial_inf))
                 for i in range(len(self.initial_inf)):
                     for j in range(len(self.initial_inf)):
                         rates[i] += self.initial_inf[j]*kernel(self.rel_pos_array[i, j])
-                # rates = copy.copy(initial_rates)
                 for inf_cell in self.all_inf_cell_ids[run]:
                     log_lik += np.log(rates[inf_cell])
                     for j in range(len(self.initial_inf)):
-                        rates[j] -= kernel(self.rel_pos_array[inf_cell, j])
+                        rates[j] += kernel(self.rel_pos_array[inf_cell, j])
 
             return log_lik
 
         else:
             raise ValueError("Unrecognised precomputation level!")
 
-    def get_function(self, params):
+    def get_function(self, params, kernel_vals=None):
         """Get log likelihood function for use with pymc3."""
 
         if self.precompute_level == "full":
@@ -407,7 +408,26 @@ class LikelihoodFunction:
             return log_likelihood
 
         elif self.precompute_level == "partial":
+            # TODO Handle multiple runs
+            if len(self.all_inf_cell_ids) != 1:
+                raise NotImplementedError("Partial precompute cannot handle multiple runs!")
+
             log_lik = theano.tensor.sum(theano.tensor.dot(self.const_factors, params))
+
+            init_inf = theano.shared(self.initial_inf)
+            # Calculate initial rates
+            rates_0, updates = theano.scan(
+                fn=self._get_rate, sequences=theano.tensor.arange(len(self.initial_inf)),
+                outputs_info=None,
+                non_sequences=[kernel_vals, init_inf],
+                strict=True)
+            # Scan over events
+            ([all_rates, rate_terms], updates) = theano.scan(
+                fn=self._inf_cell, sequences=self.all_inf_cell_ids[0],
+                outputs_info=[dict(initial=rates_0, taps=[-1]), None],
+                non_sequences=[kernel_vals], strict=True)
+            # Combine results
+            log_lik += theano.tensor.sum(theano.tensor.log(rate_terms))
 
             def log_likelihood(required_argument):
                 return log_lik
@@ -435,5 +455,15 @@ class LikelihoodFunction:
             raise ValueError("Unrecognised precomputation level!")
 
 
-def inf_cell():
-    pass
+    def _inf_cell(self, inf_id, rates_m1, kernel_vals):
+        
+        rates = rates_m1 + kernel_vals[inf_id, :]
+        rate_term = rates_m1[inf_id]
+
+        return [rates, rate_term]
+    
+    def _get_rate(self, cell, kernel_vals, inf_state):
+
+        rate = theano.tensor.sum(inf_state * kernel_vals[cell, :])
+
+        return rate
