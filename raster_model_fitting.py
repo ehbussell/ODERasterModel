@@ -455,7 +455,13 @@ class LikelihoodFunction:
         return cls(loaded['level'], loaded)
 
     def eval_loglik(self, kernel, jac=None):
-        """Compute the data likelihood for the given kernel function."""
+        """Compute the data likelihood for the given kernel function.
+
+        Arguments:
+            kernel: Function to evaluate the dispersal kernel from between cell distance
+            jac:    Function to evaluate the jacobian of the kernel. If None then the likelihood
+                    jacobian is not calculated.
+        """
 
         if self.precompute_level == "full":
             kernel_vals = np.concatenate([[1.0], kernel(self.distances)])
@@ -466,31 +472,42 @@ class LikelihoodFunction:
 
             if jac is not None:
                 dk = jac(self.distances).T
-                jacobian = np.dot(self.const_factors[1:], dk)
-                jacobian += np.array([
-                    np.sum(np.dot(self.matrix[:, 1:], dk[:, i]) / dot) for i in range(dk.shape[1])])
+                dk = np.vstack((np.zeros(dk.shape[1]), dk))
+                jacobian = np.dot(self.const_factors, dk)
+                inv_dot = np.reciprocal(dot)
+                jacobian += np.dot(inv_dot, np.dot(self.matrix, dk))
             else:
                 jacobian = None
-            
+
             return (log_lik, jacobian)
 
         elif self.precompute_level == "partial":
             kernel_vals = np.concatenate([[1.0], kernel(self.distances)])
 
-            log_lik = np.sum(np.dot(self.const_factors, kernel_vals))
+            log_lik = np.dot(self.const_factors, kernel_vals)
 
-            print("Constant factors complete")
+            if jac is not None:
+                dk = jac(self.distances).T
+                dk = np.vstack((np.zeros(dk.shape[1]), dk))
+                jacobian = np.dot(self.const_factors, dk)
+                full_dk = jac(self.rel_pos_array).T
+                full_dk = [np.array(full_dk[:, i, :])
+                           for i in range(self.rel_pos_array.shape[1])]
+            else:
+                jacobian = None
 
-            full_kernel = kernel(self.rel_pos_array)
+            full_kernel = [np.array(kernel(self.rel_pos_array[:, i]))
+                           for i in range(self.rel_pos_array.shape[1])]
             for inf_cell_ids in self.all_inf_cell_ids:
                 inf_state = copy.copy(self.initial_inf)
-                print("Copied infected cells")
                 for inf_cell in inf_cell_ids:
-                    log_lik += np.log(np.sum(np.dot(inf_state, full_kernel[:, inf_cell])))
+                    dot = np.dot(inf_state, full_kernel[inf_cell])
+                    log_lik += np.log(dot)
+                    if jac is not None:
+                        jacobian += np.dot(inf_state, full_dk[inf_cell]) / dot
                     inf_state[inf_cell] += 1
-                print("Run complete")
 
-            return log_lik
+            return (log_lik, jacobian)
 
         else:
             raise ValueError("Unrecognised precomputation level!")
