@@ -4,11 +4,12 @@ import copy
 import numpy as np
 import pymc3 as pm
 import theano
+from scipy.optimize import minimize
 from IndividualSimulator.utilities import output_data
 import raster_tools
 
 def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, nsims=None,
-                    mcmc_params=None, output_stub="RasterFit", likelihood_func=None):
+                    mcmc_params=None, likelihood_func=None):
     """Run MCMC to find parameter distributions for raster model.
 
     Required arguments:
@@ -26,7 +27,6 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
                             all runs in the simulation output will be used.
         mcmc_params:        Dictionary of tuning parameters to use for MCMC run.  Contains:
                                 iters:  Number of iterations in MCMC routine (default 1000).
-        output_stub:        Path for output files: logs and parameter traces.
         likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
                             then this is generated.
     """
@@ -67,10 +67,102 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
 
         start = pm.find_MAP()
         print(start)
+        # trace = pm.sample(mcmc_params['iters'], progressbar=True, step=pm.Metropolis(), start=start)
         trace = pm.sample(mcmc_params['iters'], progressbar=True, start=start)
 
     return trace
 
+
+def fit_raster_MLE(data_stub, kernel_generator, kernel_params, target_raster, nsims=None,
+                   likelihood_func=None, precompute_level="full", kernel_jac=None, use_theano=True):
+    """Maximise likelihood to find parameter distributions for raster model.
+
+    Required arguments:
+        data_stub:          Simulation data stub to use.
+        kernel_generator:   Function that generates kernel function for given kernel parameters.
+        kernel_params:      Values of kernel parameters to use. List where each element corresponds
+                            to a single kernel parameter, each entry is (name, value). Each value
+                            can be a fixed number, or a tuple specifying bounds on that parameter
+                            for a uniform prior.
+        target_raster:      Raster header dictionary for target raster description of simulation
+                            output.
+
+    Optional arguments:
+        nsims:              Number of simulations from data to use.  If set to None (default) then
+                            all runs in the simulation output will be used.
+        likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
+                            then this is generated.
+        precompute_level:   If likelihood_func is None, and therefore the precomputed log likelihood
+                            function is to be generated, then this level of precomputation is used.
+                            Options are full and partial.
+    """
+
+    # TODO adjust to use full/partial precomputation depending on number of cells
+
+    if likelihood_func is None:
+        print("Precomputing likelihood function")
+        likelihood_func = precompute_loglik(
+            data_stub, nsims, target_raster, end_time=None, ignore_outside_raster=True,
+            precompute_level=precompute_level)
+        print("Completed")
+
+    if use_theano:
+
+        basic_model = pm.Model()
+
+        with basic_model:
+            param_dists = []
+
+            for name, val in kernel_params:
+                if isinstance(val, tuple) and len(val) == 2:
+                    param_dists.append(pm.Uniform(name, lower=val[0], upper=val[1]))
+                elif isinstance(val, (int, float)):
+                    param_dists.append(val)
+                else:
+                    raise ValueError("Invalid kernel parameter options!")
+
+            kernel_vals = kernel_generator(*param_dists)(likelihood_func.distances)
+            params = theano.tensor.concatenate([[1.0], kernel_vals])
+
+            if likelihood_func.precompute_level == "full":
+                log_likelihood = likelihood_func.get_function(params)
+            elif likelihood_func.precompute_level == "partial":
+                log_likelihood = likelihood_func.get_function(
+                    params, kernel_generator(*param_dists)(likelihood_func.rel_pos_array[:, :]))
+
+            y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
+
+            start = pm.find_MAP(return_raw=True)
+
+        return start
+
+    else:
+
+        x0 = [0, 0]
+
+        bounds = [val for name, val in kernel_params]
+
+        def neg_loglik(params):
+            # First reverse logit transform parameters
+            _params_transformed = np.array(
+                [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, params)])
+            val, jacobian = likelihood_func.eval_loglik(
+                kernel_generator(*_params_transformed), jac=kernel_jac(*_params_transformed))
+
+            if jacobian is not None:
+                scale_transform = np.array([
+                    (x-a)*(b-x)/(b-a) for (a, b), x in zip(bounds, _params_transformed)])
+                _jacobian_transformed = jacobian * scale_transform
+                return (np.nan_to_num(-val), np.nan_to_num(-_jacobian_transformed))
+
+            return np.nan_to_num(-val)
+
+        param_fit = minimize(neg_loglik, x0, jac=True, method="L-BFGS-B")
+        x1 = param_fit.x
+        x2 = np.array(
+            [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, x1)])
+
+        return x2
 
 def precompute_loglik(data_stub, nsims, raster_header, end_time=None,
                       ignore_outside_raster=False, output_freq=10, precompute_level="full"):
@@ -362,39 +454,48 @@ class LikelihoodFunction:
         loaded = np.load(filename)
         return cls(loaded['level'], loaded)
 
-    def eval_loglik(self, kernel):
+    def eval_loglik(self, kernel, jac=None):
         """Compute the data likelihood for the given kernel function."""
 
         if self.precompute_level == "full":
             kernel_vals = np.concatenate([[1.0], kernel(self.distances)])
 
-            log_lik = np.sum(np.dot(self.const_factors, kernel_vals))
-            log_lik += np.sum(np.log(np.dot(self.matrix, kernel_vals)))
+            log_lik = np.dot(self.const_factors, kernel_vals)
+            dot = np.dot(self.matrix, kernel_vals)
+            log_lik += np.sum(np.log(dot))
 
-            return log_lik
+            if jac is not None:
+                dk = jac(self.distances).T
+                jacobian = np.dot(self.const_factors[1:], dk)
+                jacobian += np.array([
+                    np.sum(np.dot(self.matrix[:, 1:], dk[:, i]) / dot) for i in range(dk.shape[1])])
+            else:
+                jacobian = None
+            
+            return (log_lik, jacobian)
 
         elif self.precompute_level == "partial":
             kernel_vals = np.concatenate([[1.0], kernel(self.distances)])
 
             log_lik = np.sum(np.dot(self.const_factors, kernel_vals))
 
-            for run in range(len(self.all_inf_cell_ids)):
-                # calc initial rates
-                rates = np.zeros(len(self.initial_inf))
-                for i in range(len(self.initial_inf)):
-                    for j in range(len(self.initial_inf)):
-                        rates[i] += self.initial_inf[j]*kernel(self.rel_pos_array[i, j])
-                for inf_cell in self.all_inf_cell_ids[run]:
-                    log_lik += np.log(rates[inf_cell])
-                    for j in range(len(self.initial_inf)):
-                        rates[j] += kernel(self.rel_pos_array[inf_cell, j])
+            print("Constant factors complete")
+
+            full_kernel = kernel(self.rel_pos_array)
+            for inf_cell_ids in self.all_inf_cell_ids:
+                inf_state = copy.copy(self.initial_inf)
+                print("Copied infected cells")
+                for inf_cell in inf_cell_ids:
+                    log_lik += np.log(np.sum(np.dot(inf_state, full_kernel[:, inf_cell])))
+                    inf_state[inf_cell] += 1
+                print("Run complete")
 
             return log_lik
 
         else:
             raise ValueError("Unrecognised precomputation level!")
 
-    def get_function(self, params, kernel_vals=None):
+    def get_function(self, params, full_kernel=None):
         """Get log likelihood function for use with pymc3."""
 
         if self.precompute_level == "full":
@@ -414,20 +515,13 @@ class LikelihoodFunction:
 
             log_lik = theano.tensor.sum(theano.tensor.dot(self.const_factors, params))
 
-            init_inf = theano.shared(self.initial_inf)
-            # Calculate initial rates
-            rates_0, updates = theano.scan(
-                fn=self._get_rate, sequences=theano.tensor.arange(len(self.initial_inf)),
-                outputs_info=None,
-                non_sequences=[kernel_vals, init_inf],
-                strict=True)
             # Scan over events
-            ([all_rates, rate_terms], updates) = theano.scan(
+            ([inf_state, lik_terms], updates) = theano.scan(
                 fn=self._inf_cell, sequences=self.all_inf_cell_ids[0],
-                outputs_info=[dict(initial=rates_0, taps=[-1]), None],
-                non_sequences=[kernel_vals], strict=True)
+                outputs_info=[dict(initial=copy.copy(self.initial_inf), taps=[-1]), None],
+                non_sequences=[full_kernel], strict=True)
             # Combine results
-            log_lik += theano.tensor.sum(theano.tensor.log(rate_terms))
+            log_lik += theano.tensor.sum(theano.tensor.log(lik_terms))
 
             def log_likelihood(required_argument):
                 return log_lik
@@ -455,15 +549,10 @@ class LikelihoodFunction:
             raise ValueError("Unrecognised precomputation level!")
 
 
-    def _inf_cell(self, inf_id, rates_m1, kernel_vals):
-        
-        rates = rates_m1 + kernel_vals[inf_id, :]
-        rate_term = rates_m1[inf_id]
+    def _inf_cell(self, inf_id, inf_state_m1, full_kernel):
 
-        return [rates, rate_term]
-    
-    def _get_rate(self, cell, kernel_vals, inf_state):
+        lik_term = theano.tensor.sum(theano.tensor.dot(inf_state_m1, full_kernel[:, inf_id]))
 
-        rate = theano.tensor.sum(inf_state * kernel_vals[cell, :])
+        new_inf_state = theano.tensor.set_subtensor(inf_state_m1[inf_id], inf_state_m1[inf_id]+1)
 
-        return rate
+        return [new_inf_state, lik_term]
