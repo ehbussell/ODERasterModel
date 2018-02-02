@@ -8,27 +8,27 @@ from scipy.optimize import minimize
 from IndividualSimulator.utilities import output_data
 import raster_tools
 
-def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, nsims=None,
-                    mcmc_params=None, likelihood_func=None):
+def fit_raster_MCMC(kernel_generator, kernel_params, data_stub=None, nsims=None, mcmc_params=None,
+                    likelihood_func=None, target_raster=None):
     """Run MCMC to find parameter distributions for raster model.
 
     Required arguments:
-        data_stub:          Simulation data stub to use.
         kernel_generator:   Function that generates kernel function for given kernel parameters.
         kernel_params:      Values of kernel parameters to use. List where each element corresponds
                             to a single kernel parameter, each entry is (name, value). Each value
                             can be a fixed number, or a tuple specifying bounds on that parameter
                             for a uniform prior.
-        target_raster:      Raster header dictionary for target raster description of simulation
-                            output.
 
     Optional arguments:
+        data_stub:          Simulation data stub to use.
         nsims:              Number of simulations from data to use.  If set to None (default) then
                             all runs in the simulation output will be used.
         mcmc_params:        Dictionary of tuning parameters to use for MCMC run.  Contains:
                                 iters:  Number of iterations in MCMC routine (default 1000).
         likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
                             then this is generated.
+        target_raster:      Raster header dictionary for target raster description of simulation
+                            output.
     """
 
     # TODO adjust to use full/partial precomputation depending on number of cells
@@ -73,31 +73,34 @@ def fit_raster_MCMC(data_stub, kernel_generator, kernel_params, target_raster, n
     return trace
 
 
-def fit_raster_MLE(data_stub, kernel_generator, kernel_params, target_raster, nsims=None,
-                   likelihood_func=None, precompute_level="full", kernel_jac=None, use_theano=True):
+def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=None, nsims=None,
+                   likelihood_func=None, precompute_level="full", target_raster=None,
+                   kernel_jac=None, use_theano=False, raw_output=False):
     """Maximise likelihood to find parameter distributions for raster model.
 
     Required arguments:
-        data_stub:          Simulation data stub to use.
         kernel_generator:   Function that generates kernel function for given kernel parameters.
-        kernel_params:      Values of kernel parameters to use. List where each element corresponds
-                            to a single kernel parameter, each entry is (name, value). Each value
+        kernel_params:      Values of kernel parameters to use. Dict where each element corresponds
+                            to a single kernel parameter, each entry is name: value. Each value
                             can be a fixed number, or a tuple specifying bounds on that parameter
                             for a uniform prior.
-        target_raster:      Raster header dictionary for target raster description of simulation
-                            output.
 
     Optional arguments:
-        nsims:              Number of simulations from data to use.  If set to None (default) then
-                            all runs in the simulation output will be used.
+        param_start:        Parameter dictionary giving start points for optimisation. If None then
+                            starts from centre of prior.
+        data_stub:          Simulation data stub to use. Required if likelihood function is not
+                            specified.
+        nsims:              Number of simulations from data to use. If set to None (default) then
+                            all runs in the simulation output will be used. Only required if the
+                            likelihood function is not specified.
         likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
                             then this is generated.
         precompute_level:   If likelihood_func is None, and therefore the precomputed log likelihood
                             function is to be generated, then this level of precomputation is used.
                             Options are full and partial.
+        target_raster:      Raster header dictionary for target raster description of simulation
+                            output. Only required if likelihood function is not specified.
     """
-
-    # TODO adjust to use full/partial precomputation depending on number of cells
 
     if likelihood_func is None:
         print("Precomputing likelihood function")
@@ -113,7 +116,7 @@ def fit_raster_MLE(data_stub, kernel_generator, kernel_params, target_raster, ns
         with basic_model:
             param_dists = []
 
-            for name, val in kernel_params:
+            for name, val in kernel_params.items():
                 if isinstance(val, tuple) and len(val) == 2:
                     param_dists.append(pm.Uniform(name, lower=val[0], upper=val[1]))
                 elif isinstance(val, (int, float)):
@@ -132,15 +135,20 @@ def fit_raster_MLE(data_stub, kernel_generator, kernel_params, target_raster, ns
 
             y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
 
-            start = pm.find_MAP(return_raw=True)
+            start = pm.find_MAP(return_raw=raw_output)
 
         return start
 
     else:
 
-        x0 = [0, 0]
+        param_names = sorted(kernel_params)
+        bounds = [kernel_params[name] for name in param_names]
 
-        bounds = [val for name, val in kernel_params]
+        if param_start is None:
+            x0 = [0 for name in param_names]
+        else:
+            x0 = np.array([np.log((param_start[name] - a) / (b - param_start[name]))
+                           for name, (a, b) in zip(param_names, bounds)])
 
         def neg_loglik(params):
             # First reverse logit transform parameters
@@ -157,12 +165,18 @@ def fit_raster_MLE(data_stub, kernel_generator, kernel_params, target_raster, ns
 
             return np.nan_to_num(-val)
 
-        param_fit = minimize(neg_loglik, x0, jac=True, method="L-BFGS-B")
+        param_fit = minimize(neg_loglik, x0, jac=True, method="L-BFGS-B", options={'ftol': 1e-12})
         x1 = param_fit.x
         x2 = np.array(
             [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, x1)])
 
-        return x2
+        opt_params = {name: param for name, param in zip(param_names, x2)}
+
+        if raw_output:
+            return opt_params, param_fit
+        else:
+            return opt_params
+
 
 def precompute_loglik(data_stub, nsims, raster_header, end_time=None,
                       ignore_outside_raster=False, output_freq=10, precompute_level="full"):
@@ -359,14 +373,18 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
         else:
             raise ValueError("Not S or I!")
 
+    print(host_map)
     print("Finished cell map and initial state")
 
     rel_pos_array = np.zeros((kernel_length, kernel_length), dtype=int)
+    dist_array = np.zeros((kernel_length, kernel_length))
     init_change_term = np.zeros(1+kernel_length)
     for i in range(kernel_length):
         for j in range(kernel_length):
             rel_pos_array[i, j] = get_rel_pos(i, j)
             init_change_term[1+rel_pos_array[i, j]] -= initial_state[j, 1]*initial_state[i, 0]
+            x, y = np.unravel_index(rel_pos_array[i, j], (nrows, ncols))
+            dist_array[i, j] = np.sqrt(x*x + y*y)
 
     print("Finished relative position map and initial change term")
 
@@ -419,7 +437,7 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
         "const_factors": const_factors,
         "all_inf_cell_ids": all_inf_cell_ids,
         "initial_inf": initial_state[:, 1],
-        "rel_pos_array": rel_pos_array
+        "rel_pos_array": dist_array
     }
 
     return LikelihoodFunction(precompute_level="partial", data=ret_data)
