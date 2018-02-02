@@ -230,7 +230,7 @@ class RasterRun:
         self.results_s, self.results_i, self.results_f = results
 
         val_cols = [c for c in self.results_i.columns if c.startswith('Cell')]
-        print(self.results_i[val_cols].max().max())
+        # print(self.results_i[val_cols].max().max())
         self.max_budget_used = self.results_i[val_cols].max().max()
 
     def plot_budget(self):
@@ -254,7 +254,9 @@ class RasterRun:
 
         fps = 30
         nframes = fps * video_length
-        interval = max([1, int(len(self.results_s) / nframes)])
+        # FIXME doesnt go to end of simulation
+        interval = max([1, int(len(self.results_s) / (fps * video_length))])
+        nframes = int(np.ceil(len(self.results_s)/interval)) + 1
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1, 2, 1)
@@ -276,8 +278,11 @@ class RasterRun:
                              bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
-            data_rows = (self.results_s.iloc[frame_number*interval], self.results_i.iloc[frame_number*interval],
-                         self.results_f.iloc[frame_number*interval]*self.results_i.iloc[frame_number*interval])
+            idx = frame_number*interval
+            if idx >= len(self.results_s):
+                idx = len(self.results_s) - 1
+            data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx],
+                         self.results_f.iloc[idx]*self.results_i.iloc[idx])
             new_time = data_rows[0]['time']
 
             colours1, colours2 = self._get_colours(data_rows)
