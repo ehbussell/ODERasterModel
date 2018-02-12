@@ -120,6 +120,10 @@ class RasterModel:
 
         return RasterRun(self.params, (results_s, results_i, results_f))
 
+    def no_control_policy(self, time):
+        """Run policy for no control, to use with run_scheme."""
+        return [0]*self.ncells
+
     def optimise_BOCOP(self, BOCOP_dir=None, verbose=True):
         """Run BOCOP optimisation of model"""
 
