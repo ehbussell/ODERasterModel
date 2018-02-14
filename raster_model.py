@@ -24,6 +24,7 @@ class RasterModel:
         'coupling':         Transmission kernel,
         'times':            Times to solve for,
         'max_hosts':        Maximum number of host units per cell,
+        'primary_rate':     Primary infection rate
     And optional arguments:
         host_density_file   Name of ESRI ASCII raster file containing host density,
                             default: "HostDensity_raster.txt"
@@ -36,7 +37,7 @@ class RasterModel:
     def __init__(self, params, host_density_file="HostDensity_raster.txt",
                  initial_s_file="S0_raster.txt", initial_i_file="I0_raster.txt"):
         self._required_keys = ['dimensions', 'inf_rate', 'control_rate', 'max_budget_rate',
-                               'coupling', 'times', 'max_hosts']
+                               'coupling', 'times', 'max_hosts', 'primary_rate']
 
         for key in self._required_keys:
             if key not in params:
@@ -214,7 +215,8 @@ class RasterModel:
         S_state = X[0::2]
         I_state = X[1::2]
         control_val = control(t)
-        infection_terms = self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state)
+        infection_terms = (self.params['primary_rate'] * S_state + 
+                           self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 
         dS = -1*infection_terms
         dI = infection_terms - np.array([
