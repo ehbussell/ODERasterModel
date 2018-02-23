@@ -261,14 +261,42 @@ class RasterRun:
                              transform=ax_state.transAxes, weight="bold", fontsize=12,
                              bbox=dict(facecolor='white', alpha=0.6))
 
-    def plot(self, video_length=5):
-        """Plot RasterRun results as video."""
+    def make_video(self, video_length=5):
+        """Make animation of raster run."""
 
+        video_length *= 1000
         fps = 30
         nframes = fps * video_length
-        # FIXME doesnt go to end of simulation
-        interval = max([1, int(len(self.results_s) / (fps * video_length))])
+        interval = max([1, int(len(self.results_s) / nframes)])
         nframes = int(np.ceil(len(self.results_s)/interval)) + 1
+
+        cmap = plt.get_cmap("Oranges")
+        cNorm = colors.Normalize(vmin=0, vmax=self.max_budget_used)
+        scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
+
+        indices = np.r_[0:len(self.results_s):interval, -1]
+
+        times = np.array(self.results_s['time'].values[indices])
+
+        size = (len(times), *self.model_params['dimensions'])
+        s_values = np.array([self.results_s['Cell'+str(cell)].values[indices]
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        s_values = np.reshape(s_values, size)
+        i_values = np.array([self.results_i['Cell'+str(cell)].values[indices]
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        i_values = np.reshape(i_values, size)
+        f_values = np.array([self.results_f['Cell'+str(cell)].values[indices]*
+                             self.results_i['Cell'+str(cell)].values[indices]
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        f_values = np.reshape(f_values, size)
+
+        colours = np.zeros((len(times), *self.model_params['dimensions'], 4))
+        colours[:, :, :, 0] = i_values/self.model_params['max_hosts']
+        colours[:, :, :, 1] = s_values/self.model_params['max_hosts']
+        colours[:, :, :, 3] = np.ones(size)
+
+        colours_control = np.zeros((len(times), *self.model_params['dimensions'], 4))
+        colours_control = np.array([scalarMap.to_rgba(f_values[i]) for i in range(size[0])])
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1, 2, 1)
@@ -281,74 +309,35 @@ class RasterRun:
 
         fig.tight_layout()
 
-        data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0]*self.results_i.iloc[0])
-        colours1, colours2 = self._get_colours(data_rows)
-        im1 = ax1.imshow(colours1, animated=True, origin="upper")
-        im2 = ax2.imshow(colours2, animated=True, origin="upper")
-        time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
+        im1 = ax1.imshow(colours[0], animated=True, origin="upper")
+        im2 = ax2.imshow(colours_control[0], animated=True, origin="upper")
+        time_text = ax1.text(0.03, 0.9, 'time = %.3f' % times[0],
                              transform=ax1.transAxes, weight="bold", fontsize=12,
                              bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
-            idx = frame_number*interval
-            if idx >= len(self.results_s):
-                idx = len(self.results_s) - 1
-            data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx],
-                         self.results_f.iloc[idx]*self.results_i.iloc[idx])
-            new_time = data_rows[0]['time']
-
-            colours1, colours2 = self._get_colours(data_rows)
-            im1.set_array(colours1)
-            im2.set_array(colours2)
-            time_text.set_text('time = %.3f' % new_time)
+            im1.set_array(colours[frame_number])
+            im2.set_array(colours_control[frame_number])
+            time_text.set_text('time = %.3f' % times[frame_number])
 
             return im1, im2, time_text
 
         im_ani = animation.FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
-                                  blit=True, repeat=False)
+                                         blit=True, repeat=False)
+
+        return im_ani
+
+    def plot(self, video_length=5):
+        """View animation of raster run."""
+
+        im_ani = self.make_video(video_length)
 
         plt.show()
 
     def export_video(self, filename, video_length=5):
         """Export video as html"""
 
-        fps = 30
-        nframes = fps * video_length
-        interval = max([1, int(len(self.results_s) / nframes)])
-
-        fig = plt.figure()
-        ax1 = fig.add_subplot(1, 2, 1)
-        ax1.set_xticks([])
-        ax1.set_yticks([])
-
-        ax2 = fig.add_subplot(1, 2, 2)
-        ax2.set_xticks([])
-        ax2.set_yticks([])
-
-        fig.tight_layout()
-
-        data_rows = (self.results_s.iloc[0], self.results_i.iloc[0], self.results_f.iloc[0])
-        colours1, colours2 = self._get_colours(data_rows)
-        im1 = ax1.imshow(colours1, animated=True, origin="upper")
-        im2 = ax2.imshow(colours2, animated=True, origin="upper")
-        time_text = ax1.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
-                             transform=ax1.transAxes, weight="bold", fontsize=12,
-                             bbox=dict(facecolor='white', alpha=0.6))
-
-        def update(frame_number):
-            data_rows = (self.results_s.iloc[frame_number*interval], self.results_i.iloc[frame_number*interval],
-                         self.results_f.iloc[frame_number*interval])
-            new_time = data_rows[0]['time']
-
-            colours1, colours2 = self._get_colours(data_rows)
-            im1.set_array(colours1)
-            im2.set_array(colours2)
-            time_text.set_text('time = %.3f' % new_time)
-
-            return im1, im2, time_text
-
-        im_ani = animation.FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
-                                  blit=True, repeat=False)
+        im_ani = self.make_video(video_length)
 
         plt.rcParams['animation.ffmpeg_path'] = 'C:\\Users\\Elliott\\Documents\\ffmpeg-20171107-ce52e43-win64-static\\bin\\ffmpeg.exe'
         Writer = animation.writers['html']
