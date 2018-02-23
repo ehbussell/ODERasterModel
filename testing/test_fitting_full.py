@@ -35,7 +35,7 @@ class NonSpatialTests(unittest.TestCase):
         # Setup config file
         config_filename = os.path.join("testing", "nonspatial_config.ini")
         config_str = "\n[Epidemiology]\n"
-        config_str += "Model = SI\nInfRate = " + str(cls._beta_val) 
+        config_str += "Model = SI\nInfRate = " + str(cls._beta_val)
         config_str += "\nIAdvRate = 0.0\nKernelType = RASTER\n"
         config_str += "\n[Simulation]\n"
         config_str += "SimulationType = RASTER\nFinalTime = 10.0\nNIterations = 100\n"
@@ -138,7 +138,7 @@ class SpatialTests(unittest.TestCase):
                 row = i - kernel_range
                 col = j - kernel_range
                 distance = np.sqrt(row*row + col*col)
-                # host_raster.array[i, j] = np.exp(-distance/cls._scale_val) / (
+                # kernel_raster.array[i, j] = np.exp(-distance/cls._scale_val) / (
                 #     2 * np.pi * cls._scale_val * cls._scale_val)
                 kernel_raster.array[i, j] = np.exp(-distance/cls._scale_val)
         kernel_raster.to_file(init_stub + "_kernel.txt")
@@ -281,13 +281,13 @@ class TargetRasterTests(unittest.TestCase):
                 #     2 * np.pi * cls._scale_val * cls._scale_val)
                 if row % 3 == 0 and col % 3 == 0:
                     kernel_raster.array[i, j] = np.exp(-distance/cls._scale_val)
-                    
+
         kernel_raster.to_file(init_stub + "_kernel.txt")
 
         # Setup config file
         config_filename = os.path.join("testing", "target_config.ini")
         config_str = "\n[Epidemiology]\n"
-        config_str += "Model = SI\nInfRate = " + str(cls._beta_val) 
+        config_str += "Model = SI\nInfRate = " + str(cls._beta_val)
         config_str += "\nIAdvRate = 0.0\nKernelType = RASTER\n"
         config_str += "\n[Simulation]\n"
         config_str += "SimulationType = RASTER\nFinalTime = " + str(cls._end_time) + "\n"

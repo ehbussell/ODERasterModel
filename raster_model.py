@@ -2,6 +2,7 @@
 
 import warnings
 import subprocess
+import pdb
 import os
 import numpy as np
 import pandas as pd
@@ -67,16 +68,21 @@ class RasterModel:
 
         self._host_density = host_raster.array.flatten()
 
-        s_state_init = (host_raster.array.flatten() * s0_raster.array.flatten() *
-                        self.params['max_hosts'])
-        i_state_init = (host_raster.array.flatten() * i0_raster.array.flatten() *
-                        self.params['max_hosts'])
+        s_state_init = np.clip(host_raster.array.flatten() * s0_raster.array.flatten() *
+                               self.params['max_hosts'], 0, None)
+        i_state_init = np.clip(host_raster.array.flatten() * i0_raster.array.flatten() *
+                               self.params['max_hosts'], 0, None)
 
         state_init = np.empty((s_state_init.size + i_state_init.size), dtype=s_state_init.dtype)
         state_init[0::2] = s_state_init
         state_init[1::2] = i_state_init
 
         return state_init
+
+    def set_init_state(self, host_density_file, initial_s_file, initial_i_file):
+        """Initialise start point for raster run from host raster files."""
+
+        self.state_init = self._read_rasters(host_density_file, initial_s_file, initial_i_file)
 
     def run_scheme(self, control_scheme, euler=False):
         """Run ODE system forward using supplied control scheme."""
@@ -106,7 +112,7 @@ class RasterModel:
         s_dict = {'time': ts}
         i_dict = {'time': ts}
         f_dict = {'time': ts}
-        
+
         for cell in range(self.ncells):
             s_states = [x[2*cell] for i, x in enumerate(xs)]
             i_states = [x[2*cell+1] for i, x in enumerate(xs)]
@@ -215,7 +221,7 @@ class RasterModel:
         S_state = X[0::2]
         I_state = X[1::2]
         control_val = control(t)
-        infection_terms = (self.params['primary_rate'] * S_state + 
+        infection_terms = (self.params['primary_rate'] * S_state +
                            self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 
         dS = -1*infection_terms

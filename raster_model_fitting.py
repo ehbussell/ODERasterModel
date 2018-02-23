@@ -1,6 +1,7 @@
 """Tools to calculate likelihood and fits of raster model parameters, given simulation data."""
 
 import copy
+import pdb
 import numpy as np
 import pymc3 as pm
 import theano
@@ -75,7 +76,7 @@ def fit_raster_MCMC(kernel_generator, kernel_params, data_stub=None, nsims=None,
 
 def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=None, nsims=None,
                    likelihood_func=None, precompute_level="full", target_raster=None,
-                   kernel_jac=None, use_theano=False, raw_output=False):
+                   kernel_jac=None, use_theano=False, raw_output=False, primary_rate=False):
     """Maximise likelihood to find parameter distributions for raster model.
 
     Required arguments:
@@ -100,6 +101,9 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
                             Options are full and partial.
         target_raster:      Raster header dictionary for target raster description of simulation
                             output. Only required if likelihood function is not specified.
+        kernel_jac:         Jacobian function of kernel
+        primary_rate:       If True then expect PrimaryRate parameter in options. Will then fit
+                            primary infection rate
     """
 
     if likelihood_func is None:
@@ -142,6 +146,8 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
     else:
 
         param_names = sorted(kernel_params)
+        if primary_rate:
+            param_names.append(param_names.pop(param_names.index("PrimaryRate")))
         bounds = [kernel_params[name] for name in param_names]
 
         if param_start is None:
@@ -154,8 +160,13 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
             # First reverse logit transform parameters
             _params_transformed = np.array(
                 [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, params)])
-            val, jacobian = likelihood_func.eval_loglik(
-                kernel_generator(*_params_transformed), jac=kernel_jac(*_params_transformed))
+            if primary_rate:
+                val, jacobian = likelihood_func.eval_loglik(
+                    kernel_generator(*_params_transformed[:-1]),
+                    jac=kernel_jac(*_params_transformed[:-1]), primary_rate=_params_transformed[-1])
+            else:
+                val, jacobian = likelihood_func.eval_loglik(
+                    kernel_generator(*_params_transformed), jac=kernel_jac(*_params_transformed))
 
             if jacobian is not None:
                 scale_transform = np.array([
@@ -224,8 +235,8 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
     kernel_length = raster_header['nrows'] * raster_header['ncols']
 
     const_factors = np.zeros(1+kernel_length)
-    matrix_factors = [np.zeros((1+kernel_length))]
-    matrix_factors[0][0] = 1
+    primary_factor = 0.0
+    matrix_factors = []
 
     # Get data
     data = output_data.extract_output_data(data_stub)
@@ -259,7 +270,9 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
 
     rel_pos_array = np.zeros((kernel_length, kernel_length), dtype=int)
     init_change_term = np.zeros(1+kernel_length)
+    init_prim_term = 0
     for i in range(kernel_length):
+        init_prim_term  -= initial_state[i, 0]
         for j in range(kernel_length):
             rel_pos_array[i, j] = get_rel_pos(i, j)
             init_change_term[1+rel_pos_array[i, j]] -= initial_state[j, 1]*initial_state[i, 0]
@@ -273,6 +286,7 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
         previous_time = 0.0
         state = copy.copy(initial_state)
         change_term = copy.copy(init_change_term)
+        prim_term = copy.copy(init_prim_term)
         all_times = sim['time'].values
         all_host_ids = sim['hostID'].values
         for i in range(len(sim)):
@@ -282,7 +296,10 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
                 inf_cell = host_map[all_host_ids[i]]
                 time = all_times[i]
                 const_factors += change_term * (time - previous_time)
+                primary_factor += prim_term * (time - previous_time)
                 const_factors[0] += np.log(state[inf_cell, 0])
+                prim_term -= 1
+                new_row[0] = 1
                 for j in range(kernel_length):
                     rel_pos = rel_pos_array[inf_cell, j]
                     new_row[1+rel_pos] += state[j, 1]
@@ -298,10 +315,11 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
                 state[inf_cell, 0] -= 1
                 state[inf_cell, 1] += 1
             if i >= next_output:
-                print("{0}% of events complete".format(int(100*(i+1)/len(sim))))
+                # print("{0}% of events complete".format(int(100*(i+1)/len(sim))))
                 next_output += int(len(sim)*(output_freq/100))
         i = len(sim)
         if end_time is not None:
+            primary_factor += prim_term * (end_time - previous_time)
             for j in range(kernel_length):
                 for k in range(kernel_length):
                     rel_pos = rel_pos_array[j, k]
@@ -314,6 +332,7 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
 
     ret_data = {
         "const_factors": const_factors,
+        "primary_factor": primary_factor,
         "matrix": matrix,
         "distances": distances
     }
@@ -344,6 +363,7 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
     kernel_length = raster_header['nrows'] * raster_header['ncols']
 
     const_factors = np.zeros(1+kernel_length)
+    primary_factor = 0.0
 
     # Get data
     data = output_data.extract_output_data(data_stub)
@@ -373,13 +393,14 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
         else:
             raise ValueError("Not S or I!")
 
-    print(host_map)
     print("Finished cell map and initial state")
 
     rel_pos_array = np.zeros((kernel_length, kernel_length), dtype=int)
     dist_array = np.zeros((kernel_length, kernel_length))
     init_change_term = np.zeros(1+kernel_length)
+    init_prim_term = 0
     for i in range(kernel_length):
+        init_prim_term  -= initial_state[i, 0]
         for j in range(kernel_length):
             rel_pos_array[i, j] = get_rel_pos(i, j)
             init_change_term[1+rel_pos_array[i, j]] -= initial_state[j, 1]*initial_state[i, 0]
@@ -398,6 +419,7 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
         previous_time = 0.0
         state = copy.copy(initial_state)
         change_term = copy.copy(init_change_term)
+        prim_term = copy.copy(init_prim_term)
         all_times = sim['time'].values
         all_host_ids = sim['hostID'].values
         for i in range(len(sim)):
@@ -407,7 +429,9 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
                 inf_cell_ids.append(inf_cell)
                 time = all_times[i]
                 const_factors += change_term * (time - previous_time)
+                primary_factor += prim_term * (time - previous_time)
                 const_factors[0] += np.log(state[inf_cell, 0])
+                prim_term -= 1
                 for j in range(kernel_length):
                     rel_pos = rel_pos_array[inf_cell, j]
                     if j != inf_cell:
@@ -419,10 +443,11 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
                 state[inf_cell, 0] -= 1
                 state[inf_cell, 1] += 1
             if i >= next_output:
-                print("{0}% of events complete".format(int(100*(i+1)/len(sim))))
+                # print("{0}% of events complete".format(int(100*(i+1)/len(sim))))
                 next_output += int(len(sim)*(output_freq/100))
         i = len(sim)
         if end_time is not None:
+            primary_factor += prim_term * (end_time - previous_time)
             for j in range(kernel_length):
                 for k in range(kernel_length):
                     rel_pos = rel_pos_array[j, k]
@@ -435,6 +460,7 @@ def _precompute_partial(data_stub, nsims, raster_header, end_time=None,
     ret_data = {
         "distances": distances,
         "const_factors": const_factors,
+        "primary_factor": primary_factor,
         "all_inf_cell_ids": all_inf_cell_ids,
         "initial_inf": initial_state[:, 1],
         "rel_pos_array": dist_array
@@ -451,12 +477,14 @@ class LikelihoodFunction:
         if precompute_level == "full":
             self.precompute_level = "full"
             self.const_factors = data['const_factors']
+            self.primary_factor = data['primary_factor']
             self.matrix = data['matrix']
             self.distances = data['distances']
 
         elif precompute_level == "partial":
             self.precompute_level = "partial"
             self.const_factors = data['const_factors']
+            self.primary_factor = data['primary_factor']
             self.distances = data['distances']
             self.all_inf_cell_ids = data['all_inf_cell_ids']
             self.initial_inf = data['initial_inf']
@@ -472,26 +500,41 @@ class LikelihoodFunction:
         loaded = np.load(filename)
         return cls(loaded['level'], loaded)
 
-    def eval_loglik(self, kernel, jac=None):
+    def eval_loglik(self, kernel, jac=None, primary_rate=None):
         """Compute the data likelihood for the given kernel function.
 
         Arguments:
-            kernel: Function to evaluate the dispersal kernel from between cell distance
-            jac:    Function to evaluate the jacobian of the kernel. If None then the likelihood
-                    jacobian is not calculated.
+            kernel:         Function to evaluate the dispersal kernel from between cell distance
+            jac:            Function to evaluate the jacobian of the kernel. If None then the
+                            likelihood jacobian is not calculated.
+            primary_rate:   Value of primary infection rate. If None then primary infection is not
+                            included
         """
 
         if self.precompute_level == "full":
+            if primary_rate is None:
+                epsilon = 0.0
+            else:
+                epsilon = primary_rate
+
             kernel_vals = np.concatenate([[1.0], kernel(self.distances)])
 
             log_lik = np.dot(self.const_factors, kernel_vals)
+
+            kernel_vals[0] = epsilon
             dot = np.dot(self.matrix, kernel_vals)
             log_lik += np.sum(np.log(dot))
+            log_lik += self.primary_factor * epsilon
 
             if jac is not None:
                 dk = jac(self.distances).T
                 dk = np.vstack((np.zeros(dk.shape[1]), dk))
                 jacobian = np.dot(self.const_factors, dk)
+                if primary_rate is not None:
+                    jacobian = np.append(jacobian, self.primary_factor)
+                    de = np.zeros((dk.shape[0], 1))
+                    de[0] = 1.0
+                    dk = np.hstack((dk, de))
                 inv_dot = np.reciprocal(dot)
                 jacobian += np.dot(inv_dot, np.dot(self.matrix, dk))
             else:
@@ -504,10 +547,15 @@ class LikelihoodFunction:
 
             log_lik = np.dot(self.const_factors, kernel_vals)
 
+            if primary_rate is not None:
+                log_lik += self.primary_factor * primary_rate
+
             if jac is not None:
                 dk = jac(self.distances).T
                 dk = np.vstack((np.zeros(dk.shape[1]), dk))
                 jacobian = np.dot(self.const_factors, dk)
+                if primary_rate is not None:
+                    jacobian = np.append(jacobian, self.primary_factor)
                 full_dk = jac(self.rel_pos_array).T
                 full_dk = [np.array(full_dk[:, i, :])
                            for i in range(self.rel_pos_array.shape[1])]
@@ -520,9 +568,14 @@ class LikelihoodFunction:
                 inf_state = copy.copy(self.initial_inf)
                 for inf_cell in inf_cell_ids:
                     dot = np.dot(inf_state, full_kernel[inf_cell])
+                    if primary_rate is not None:
+                        dot += primary_rate
                     log_lik += np.log(dot)
                     if jac is not None:
-                        jacobian += np.dot(inf_state, full_dk[inf_cell]) / dot
+                        if primary_rate is not None:
+                            jacobian += np.append(np.dot(inf_state, full_dk[inf_cell]), 1.0) / dot
+                        else:
+                            jacobian += np.dot(inf_state, full_dk[inf_cell]) / dot
                     inf_state[inf_cell] += 1
 
             return (log_lik, jacobian)
@@ -572,13 +625,14 @@ class LikelihoodFunction:
         if self.precompute_level == "full":
             np.savez_compressed(savefile, level="full", identifier=identifier,
                                 distances=self.distances, const_factors=self.const_factors,
-                                matrix=self.matrix)
+                                matrix=self.matrix, primary_factor=self.primary_factor)
 
         elif self.precompute_level == "partial":
             np.savez_compressed(savefile, level="partial", identifier=identifier,
                                 distances=self.distances, const_factors=self.const_factors,
                                 all_inf_cell_ids=self.all_inf_cell_ids,
-                                initial_inf=self.initial_inf, rel_pos_array=self.rel_pos_array)
+                                initial_inf=self.initial_inf, rel_pos_array=self.rel_pos_array,
+                                primary_factor=self.primary_factor)
 
         else:
             raise ValueError("Unrecognised precomputation level!")
