@@ -18,7 +18,6 @@ class RasterModel:
     """Class containing a particular SIR model parametrisation, for running and optimising control.
 
     Initialisation requires a dictionary of the following parameters:
-        'dimensions':       Dimensions of landscape raster,
         'inf_rate':         Infection Rate,
         'control_rate':     Control Rate,
         'max_budget_rate':  Maximum control expenditure,
@@ -37,7 +36,7 @@ class RasterModel:
 
     def __init__(self, params, host_density_file="HostDensity_raster.txt",
                  initial_s_file="S0_raster.txt", initial_i_file="I0_raster.txt"):
-        self._required_keys = ['dimensions', 'inf_rate', 'control_rate', 'max_budget_rate',
+        self._required_keys = ['inf_rate', 'control_rate', 'max_budget_rate',
                                'coupling', 'times', 'max_hosts', 'primary_rate']
 
         for key in self._required_keys:
@@ -116,7 +115,7 @@ class RasterModel:
         for cell in range(self.ncells):
             s_states = [x[2*cell] for i, x in enumerate(xs)]
             i_states = [x[2*cell+1] for i, x in enumerate(xs)]
-            f_states = [control_scheme(ts[i])[cell] for i, x in enumerate(xs)]
+            f_states = [control_scheme(ts[i], xs[i])[cell] for i, x in enumerate(xs)]
             s_dict['Cell' + str(cell)] = s_states
             i_dict['Cell' + str(cell)] = i_states
             f_dict['Cell' + str(cell)] = f_states
@@ -127,7 +126,7 @@ class RasterModel:
 
         return RasterRun(self.params, (results_s, results_i, results_f))
 
-    def no_control_policy(self, time):
+    def no_control_policy(self, time, state):
         """Run policy for no control, to use with run_scheme."""
         return [0]*self.ncells
 
@@ -220,7 +219,7 @@ class RasterModel:
         dX = np.zeros(len(X))
         S_state = X[0::2]
         I_state = X[1::2]
-        control_val = control(t)
+        control_val = control(t, X)
         infection_terms = (self.params['primary_rate'] * S_state +
                            self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 

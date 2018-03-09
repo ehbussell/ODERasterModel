@@ -272,7 +272,7 @@ def _precompute_full(data_stub, nsims, raster_header, end_time=None,
     init_change_term = np.zeros(1+kernel_length)
     init_prim_term = 0
     for i in range(kernel_length):
-        init_prim_term  -= initial_state[i, 0]
+        init_prim_term -= initial_state[i, 0]
         for j in range(kernel_length):
             rel_pos_array[i, j] = get_rel_pos(i, j)
             init_change_term[1+rel_pos_array[i, j]] -= initial_state[j, 1]*initial_state[i, 0]
