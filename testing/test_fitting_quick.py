@@ -70,13 +70,12 @@ class QuickTests(unittest.TestCase):
         """Test full likelihood precalculation."""
         correct_const_factors = np.array([0, 0, -16, -12, -12])
         correct_matrix = np.array([
-            [1, 0, 0, 0, 0], 
-            [0, 0, 0, 0, 1],
-            [0, 0, 1, 1, 0],
-            [0, 0, 1, 1, 1],
-            [0, 0, 0, 1, 0],
-            [0, 0, 1, 0, 1],
-            [0, 0, 1, 1, 1],
+            [1, 0, 0, 0, 1],
+            [1, 0, 1, 1, 0],
+            [1, 0, 1, 1, 1],
+            [1, 0, 0, 1, 0],
+            [1, 0, 1, 0, 1],
+            [1, 0, 1, 1, 1],
         ])
         correct_distances = np.array([0, 1, 1, np.sqrt(2)])
 
@@ -124,27 +123,34 @@ class QuickTests(unittest.TestCase):
         const_factors = np.random.rand(50)
         matrix = np.random.rand(200, 50)
         distances = np.random.rand(49)
+        primary_factor = np.random.random_sample()
 
         data_dict = {
             "const_factors": const_factors,
             "matrix": matrix,
-            "distances": distances
+            "distances": distances,
+            "primary_factor": primary_factor
         }
 
         lik_func = rmf.LikelihoodFunction("full", data_dict)
 
         kernel = lambda d: np.exp(-d)
 
+        epsilon = np.random.random_sample()
+
         k_vals = np.array([1] + list(kernel(distances)))
         correct_value = np.dot(const_factors, k_vals)
+        k_vals[0] = epsilon
         correct_value += np.sum(np.log(np.dot(matrix, k_vals)))
+        correct_value += primary_factor * epsilon
 
-        self.assertAlmostEqual(lik_func.eval_loglik(kernel)[0], correct_value)
+        self.assertAlmostEqual(lik_func.eval_loglik(kernel, primary_rate=epsilon)[0], correct_value)
 
     def test_partial_evaluation(self):
         """Test partial likelihood evaluation."""
         const_factors = np.random.rand(50)
         distances = np.random.rand(49)
+        primary_factor = np.random.random_sample()
         inf_cell_ids = [np.random.choice(15, 10, replace=False)]
         init_inf = np.zeros(16)
         init_inf[15] = 1
@@ -161,20 +167,23 @@ class QuickTests(unittest.TestCase):
             "const_factors": const_factors,
             "all_inf_cell_ids": inf_cell_ids,
             "initial_inf": init_inf,
-            "rel_pos_array": rel_pos_array
+            "rel_pos_array": rel_pos_array,
+            "primary_factor": primary_factor
         }
 
         lik_func = rmf.LikelihoodFunction("partial", data_dict)
 
         kernel = lambda d: np.exp(-d)
-        lik_value = lik_func.eval_loglik(kernel)[0]
+        epsilon = np.random.random_sample()
+        lik_value = lik_func.eval_loglik(kernel, primary_rate=epsilon)[0]
 
         k_vals = np.array([1] + list(kernel(distances)))
         correct_value = np.dot(const_factors, k_vals)
         for cell_id in inf_cell_ids[0]:
-            correct_value += np.log(np.sum([
+            correct_value += np.log(epsilon + np.sum([
                 init_inf[x]*kernel(rel_pos_array[x, cell_id]) for x in range(16)]))
             init_inf[cell_id] += 1
+        correct_value += primary_factor * epsilon
 
         self.assertAlmostEqual(lik_value, correct_value)
 

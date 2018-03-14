@@ -41,7 +41,7 @@ class NonSpatialTests(unittest.TestCase):
         config_str += "SimulationType = RASTER\nFinalTime = 10.0\nNIterations = 100\n"
         config_str += "HostPosFile = " + host_file + "\nInitCondFile = " + init_stub + "\n"
         config_str += "KernelFile = " + init_stub + "_kernel.txt" + "\n"
-        config_str += "VirtualSporulationStart = 1"
+        config_str += "VirtualSporulationStart = 1\nMaxHosts = 1"
         config_str += "\n[Output]\n"
         config_str += "SummaryOutputFreq = 0\nOutputFileStub = " + cls._data_stub
         config_str += "\n[Optimisation]\n"
@@ -52,7 +52,7 @@ class NonSpatialTests(unittest.TestCase):
         cls._raster_header = host_raster.header_vals
 
         # Run simulations
-        IndividualSimulator.main(configFile=config_filename)
+        IndividualSimulator.main(configFile=config_filename, silent=True)
 
     def _nonspatial_generator(self, beta):
         def nonspatial_kernel(dist):
@@ -78,6 +78,8 @@ class NonSpatialTests(unittest.TestCase):
         # Assert beta value is close to that used in simulation
         self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
 
+        return fitted_params["beta"]
+
     def test_non_spatial_partial(self):
         """Test partial likelihood precalculation and MLE fitting for non-spatial test case."""
         # Fully precalculate likelihood function for non-spatial kernel (i.e. beta)
@@ -92,6 +94,8 @@ class NonSpatialTests(unittest.TestCase):
 
         # Assert beta value is close to that used in simulation
         self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
+
+        return fitted_params["beta"]
 
     @classmethod
     def tearDownClass(cls):
@@ -111,10 +115,10 @@ class SpatialTests(unittest.TestCase):
         # Setup and run simulation data, single hosts on lattice with exponential kernel
 
         cls._data_stub = os.path.join("testing", "spatial_sim_output")
-        cls._beta_val = 6
+        cls._beta_val = 10
         cls._scale_val = 0.3
         cls._end_time = 10
-        size = (10, 10)
+        size = (20, 20)
 
         # Create host file
         host_raster = raster_tools.RasterData(size, array=np.ones(size))
@@ -130,7 +134,7 @@ class SpatialTests(unittest.TestCase):
         host_raster.to_file(init_stub + "_I.txt")
 
         # Create kernel file
-        kernel_range = 9
+        kernel_range = 20
         kernel_size = (2*kernel_range+1, 2*kernel_range+1)
         kernel_raster = raster_tools.RasterData(kernel_size, array=np.zeros(kernel_size))
         for i in range(kernel_size[0]):
@@ -150,10 +154,10 @@ class SpatialTests(unittest.TestCase):
         config_str += "\nIAdvRate = 0.0\nKernelType = RASTER\n"
         config_str += "\n[Simulation]\n"
         config_str += "SimulationType = RASTER\nFinalTime = " + str(cls._end_time) +"\n"
-        config_str += "NIterations = 500\n"
+        config_str += "NIterations = 100\n"
         config_str += "HostPosFile = " + host_file + "\nInitCondFile = " + init_stub + "\n"
         config_str += "KernelFile = " + init_stub + "_kernel.txt" + "\n"
-        config_str += "VirtualSporulationStart = 3"
+        config_str += "VirtualSporulationStart = 3\nMaxHosts = 1"
         config_str += "\n[Output]\n"
         config_str += "SummaryOutputFreq = 0\nOutputFileStub = " + cls._data_stub
         config_str += "\n[Optimisation]\n"
@@ -195,15 +199,16 @@ class SpatialTests(unittest.TestCase):
 
         # Fit using MLE
         fitted_params, raw_output = rmf.fit_raster_MLE(
-            self._spatial_generator, {"beta": [0, 10], "scale": [0, 10]}, likelihood_func=lik_func,
+            self._spatial_generator, {"beta": [0, 20], "scale": [0, 10]}, likelihood_func=lik_func,
             kernel_jac=self._spatial_jac_generator, raw_output=True,
-            param_start={'beta':4, 'scale':0.2})
+            param_start={'beta':8, 'scale':0.2})
 
         print(fitted_params, raw_output)
 
         # Assert beta and scale values are close to those used in simulation
         self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.05)
         self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+        return fitted_params['beta'], fitted_params['scale']
 
     def test_spatial_partial(self):
         """Test partial likelihood precalculation and MLE fitting for spatial test case."""
@@ -214,15 +219,16 @@ class SpatialTests(unittest.TestCase):
 
         # Fit using MLE
         fitted_params, raw_output = rmf.fit_raster_MLE(
-            self._spatial_generator, {"beta": [0, 10], "scale": [0, 10]}, likelihood_func=lik_func,
+            self._spatial_generator, {"beta": [0, 20], "scale": [0, 10]}, likelihood_func=lik_func,
             kernel_jac=self._spatial_jac_generator, raw_output=True,
-            param_start={'beta':4, 'scale':0.2})
+            param_start={'beta':8, 'scale':0.2})
 
         print(fitted_params, raw_output)
 
         # Assert beta and scale values are close to those used in simulation
         self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.05)
         self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+        return fitted_params['beta'], fitted_params['scale']
 
     @classmethod
     def tearDownClass(cls):
@@ -294,7 +300,7 @@ class TargetRasterTests(unittest.TestCase):
         config_str += "NIterations = 200\n"
         config_str += "HostPosFile = " + host_file + "\nInitCondFile = " + init_stub + "\n"
         config_str += "KernelFile = " + init_stub + "_kernel.txt" + "\n"
-        config_str += "VirtualSporulationStart = 3"
+        config_str += "VirtualSporulationStart = 3\nMaxHosts = 1"
         config_str += "\n[Output]\n"
         config_str += "SummaryOutputFreq = 0\nOutputFileStub = " + cls._data_stub
         config_str += "\n[Optimisation]\n"
