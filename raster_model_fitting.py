@@ -8,6 +8,7 @@ import theano
 from scipy.optimize import minimize
 from IndividualSimulator.utilities import output_data
 import raster_tools
+import raster_model
 
 def fit_raster_MCMC(kernel_generator, kernel_params, data_stub=None, nsims=None, mcmc_params=None,
                     likelihood_func=None, target_raster=None):
@@ -103,7 +104,7 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
                             output. Only required if likelihood function is not specified.
         kernel_jac:         Jacobian function of kernel
         primary_rate:       If True then expect PrimaryRate parameter in options. Will then fit
-                            primary infection rate
+                            primary infection rate.
     """
 
     if likelihood_func is None:
@@ -187,6 +188,116 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
             return opt_params, param_fit
         else:
             return opt_params
+
+def fit_raster_SSE(model, kernel_generator, kernel_params, data_stub, param_start=None, nsims=None,
+                   target_raster=None, dimensions=None, raw_output=False, primary_rate=False):
+    """Minimise summed square errors from simulations to find best fitting parameters.
+
+    Required arguments:
+        kernel_generator:   Function that generates kernel function for given kernel parameters.
+        kernel_params:      Values of kernel parameters to use. Dict where each element corresponds
+                            to a single kernel parameter, each entry is name: value. Each value
+                            can be a fixed number, or a tuple specifying bounds on that parameter
+                            for a uniform prior.
+        data_stub:          Simulation data stub to use.
+        param_start:        Parameter dictionary giving start points for optimisation. If None then
+                            starts from centre of prior.
+        nsims:              Number of simulations from data to use. If set to None (default) then
+                            all runs in the simulation output will be used.
+        target_raster:      Raster header dictionary for target raster description of simulation
+                            output.
+        primary_rate:       If True then expect PrimaryRate parameter in options. Will then fit
+                            primary infection rate.
+    """
+
+    param_names = sorted(kernel_params)
+    if primary_rate:
+        param_names.append(param_names.pop(param_names.index("PrimaryRate")))
+    bounds = [kernel_params[name] for name in param_names]
+
+    if param_start is None:
+        x0 = [0 for name in param_names]
+    else:
+        x0 = np.array([np.log((param_start[name] - a) / (b - param_start[name]))
+                       for name, (a, b) in zip(param_names, bounds)])
+
+    times = model.params['times']
+
+    # Extract simulation data at correct resolution
+    base_data = output_data.create_cell_data(
+        data_stub, target_header=target_raster, ignore_outside_raster=True)
+    if nsims is None:
+        nsims = len(base_data)
+    if dimensions is None:
+        dimensions = (target_raster["ncols"], target_raster['nrows'])
+
+    ncells = np.product(dimensions)
+    sim_data = np.ndarray((nsims, ncells, len(times)))
+
+    # Extract state at test times for each cell
+    for i, dataset in enumerate(base_data):
+        for cell in range(ncells):
+            current_i = None
+            idx = 0
+            for t, _, i_state, *_ in dataset[cell]:
+                while t > times[idx]:
+                    sim_data[i, cell, idx] = current_i
+                    idx += 1
+                    if idx > len(times):
+                        break
+                current_i = i_state
+            while idx != len(times):
+                sim_data[i, cell, idx] = current_i
+                idx += 1
+
+    # Setup raster model
+    distances = np.zeros((ncells, ncells))
+    for i in range(ncells):
+        for j in range(ncells):
+            dx = abs((i % dimensions[1]) - (j % dimensions[1]))
+            dy = abs(int(i/dimensions[1]) - int(j/dimensions[1]))
+            distances[i, j] = np.sqrt(dx*dx + dy*dy)
+
+    # Define objective function that sets cell coupling and calculates sum of squared errors
+    def objective(params):
+        # First reverse logit transform parameters
+        _params_transformed = np.array(
+            [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, params)])
+        if primary_rate:
+            kernel = kernel_generator(*_params_transformed[:-1])
+            primary_value = _params_transformed[-1]
+        else:
+            kernel = kernel_generator(*_params_transformed)
+            primary_value = 0
+
+        new_coupling = kernel(distances)
+        model.params['coupling'] = new_coupling
+        model.params['primary_rate'] = primary_value
+
+        no_control_tmp = model.run_scheme(model.no_control_policy)
+        no_control_results = np.zeros((ncells, len(times)))
+        for cell in range(ncells):
+            i_vals = no_control_tmp.results_i["Cell" + str(cell)].values
+            no_control_results[cell, :] = i_vals
+
+        sse = 0
+        for i, dataset in enumerate(sim_data):
+            sse += np.sum(np.square(no_control_results - dataset))
+
+        return sse
+
+    # Minimse SSE
+    param_fit = minimize(objective, x0, method="L-BFGS-B", options={'ftol': 1e-12})
+    x1 = param_fit.x
+    x2 = np.array(
+        [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, x1)])
+
+    opt_params = {name: param for name, param in zip(param_names, x2)}
+
+    if raw_output:
+        return opt_params, param_fit
+    else:
+        return opt_params
 
 
 def precompute_loglik(data_stub, nsims, raster_header, end_time=None,

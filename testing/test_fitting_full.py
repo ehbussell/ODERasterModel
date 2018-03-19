@@ -1,10 +1,12 @@
 import unittest
 import os
+import pdb
 import glob
 import numpy as np
 import raster_tools
 import IndividualSimulator
 import raster_model_fitting as rmf
+import raster_model
 
 class NonSpatialTests(unittest.TestCase):
     """Test fitting of raster model in non-spatial context."""
@@ -17,16 +19,24 @@ class NonSpatialTests(unittest.TestCase):
         cls._beta_val = 0.0007
 
         # Create host file
-        host_raster = raster_tools.RasterData((1, 1), array=[[1000]])
+        host_raster = raster_tools.RasterData((1, 1), array=np.array([[1000]], dtype=float))
         host_file = os.path.join("testing", "nonspatial_host_test_case.txt")
         host_raster.to_file(host_file)
 
-        # Create initial conditions files
+        # Create simulation initial conditions files
         init_stub = os.path.join("testing", "nonspatial_init_test_case")
         host_raster.array[0, 0] = 995
         host_raster.to_file(init_stub + "_S.txt")
         host_raster.array[0, 0] = 5
         host_raster.to_file(init_stub + "_I.txt")
+
+        # Create raster model initial conditions files
+        host_raster.array[0, 0] = 1
+        host_raster.to_file(init_stub + "_host_density.txt")
+        host_raster.array[0, 0] = 0.995
+        host_raster.to_file(init_stub + "_S_density.txt")
+        host_raster.array[0, 0] = 0.005
+        host_raster.to_file(init_stub + "_I_density.txt")
 
         # Create kernel file
         host_raster.array[0, 0] = 1
@@ -41,7 +51,7 @@ class NonSpatialTests(unittest.TestCase):
         config_str += "SimulationType = RASTER\nFinalTime = 10.0\nNIterations = 100\n"
         config_str += "HostPosFile = " + host_file + "\nInitCondFile = " + init_stub + "\n"
         config_str += "KernelFile = " + init_stub + "_kernel.txt" + "\n"
-        config_str += "VirtualSporulationStart = 1\nMaxHosts = 1"
+        config_str += "VirtualSporulationStart = 1\nMaxHosts = 1000"
         config_str += "\n[Output]\n"
         config_str += "SummaryOutputFreq = 0\nOutputFileStub = " + cls._data_stub
         config_str += "\n[Optimisation]\n"
@@ -50,6 +60,7 @@ class NonSpatialTests(unittest.TestCase):
             outfile.write(config_str)
 
         cls._raster_header = host_raster.header_vals
+        cls._init_stub = init_stub
 
         # Run simulations
         IndividualSimulator.main(configFile=config_filename, silent=True)
@@ -94,6 +105,35 @@ class NonSpatialTests(unittest.TestCase):
 
         # Assert beta value is close to that used in simulation
         self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
+
+        return fitted_params["beta"]
+
+    def test_non_spatial_sse(self):
+        """Test fitting by minimising summed squared errors."""
+
+        model_params = {
+            'inf_rate': 1.0,
+            'control_rate': 0,
+            'max_budget_rate': 0,
+            'coupling': None,
+            'times': np.linspace(0, 10, 101),
+            'max_hosts': 1000,
+            'primary_rate': 0
+        }
+
+        model = raster_model.RasterModel(
+            model_params, host_density_file=self._init_stub+"_host_density.txt",
+            initial_s_file=self._init_stub+"_S_density.txt",
+            initial_i_file=self._init_stub+"_I_density.txt")
+
+        fitted_params, fit = rmf.fit_raster_SSE(
+            model, self._nonspatial_generator, {"beta": [0, 0.1]}, self._data_stub,
+            dimensions=(1, 1), raw_output=True)
+
+        print(fit)
+
+        # Assert beta value is close to that used in simulation
+        self.assertLess(abs((self._beta_val-fitted_params['beta'])/self._beta_val), 0.05)
 
         return fitted_params["beta"]
 
@@ -150,7 +190,7 @@ class SpatialTests(unittest.TestCase):
         # Setup config file
         config_filename = os.path.join("testing", "spatial_config.ini")
         config_str = "\n[Epidemiology]\n"
-        config_str += "Model = SI\nInfRate = " + str(cls._beta_val) 
+        config_str += "Model = SI\nInfRate = " + str(cls._beta_val)
         config_str += "\nIAdvRate = 0.0\nKernelType = RASTER\n"
         config_str += "\n[Simulation]\n"
         config_str += "SimulationType = RASTER\nFinalTime = " + str(cls._end_time) +"\n"
