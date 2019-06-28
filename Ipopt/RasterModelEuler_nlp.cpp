@@ -3,6 +3,7 @@
 #include <cassert>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 using namespace Ipopt;
 
@@ -150,6 +151,19 @@ bool RasterModelEuler_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
         g_l[m_ncells*(2*m_n_segments + 1) + m_n_segments + 1 + i] = g_u[m_ncells*(2*m_n_segments + 1) + m_n_segments + 1 + i] = m_init_state[get_i_index(0, i)];
     }
 
+    // Index acc_idx = m_ncells*(2*m_n_segments + 2) + m_n_segments + 1;
+
+    // // Constraints on number treated
+    // for (Index k=0; k<(m_n_segments+1); k++) {
+    //     for (Index i=0; i<m_ncells; i++) {
+    //         g_l[acc_idx] = 0;
+    //         g_u[acc_idx] = 2e19;
+    //         acc_idx++;
+    //     }
+    // }
+
+    // assert(acc_idx == m);
+
     return true;
 }
 
@@ -201,18 +215,22 @@ bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
         assert(acc_idx == n);
     } else {
         // Initialise from previous results files
+        std::string line;
         std::string tmp;
+        std::stringstream iss;
         // Read S input file
         std::ifstream inputFile(m_start_file_stub + "_S.csv");
         if (inputFile){
-            std::getline(inputFile, tmp);
-
+            std::getline(inputFile, line);
             for (Index k=0; k<(m_n_segments+1); k++){
-                std::getline(inputFile, tmp, ',');
+                std::getline(inputFile, line);
+                iss << line;
+                std::getline(iss, tmp, ',');
                 for (Index i=0; i<m_ncells; i++){
-                    std::getline(inputFile, tmp, ',');
+                    std::getline(iss, tmp, ',');
                     x[get_s_index(k, i)] = std::stod(tmp);
                 }
+                iss.clear();
             }
 
             inputFile.close();
@@ -224,14 +242,16 @@ bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
         // Read I input file
         inputFile.open(m_start_file_stub + "_I.csv");
         if (inputFile){
-            std::getline(inputFile, tmp);
-
+            std::getline(inputFile, line);
             for (Index k=0; k<(m_n_segments+1); k++){
-                std::getline(inputFile, tmp, ',');
+                std::getline(inputFile, line);
+                iss << line;
+                std::getline(iss, tmp, ',');
                 for (Index i=0; i<m_ncells; i++){
-                    std::getline(inputFile, tmp, ',');
+                    std::getline(iss, tmp, ',');
                     x[get_i_index(k, i)] = std::stod(tmp);
                 }
+                iss.clear();
             }
 
             inputFile.close();
@@ -243,14 +263,16 @@ bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
         // Read f input file
         inputFile.open(m_start_file_stub + "_f.csv");
         if (inputFile){
-            std::getline(inputFile, tmp);
-
+            std::getline(inputFile, line);
             for (Index k=0; k<(m_n_segments+1); k++){
-                std::getline(inputFile, tmp, ',');
+                std::getline(inputFile, line);
+                iss << line;
+                std::getline(iss, tmp, ',');
                 for (Index i=0; i<m_ncells; i++){
-                    std::getline(inputFile, tmp, ',');
+                    std::getline(iss, tmp, ',');
                     x[get_f_index(k, i)] = std::stod(tmp);
                 }
+                iss.clear();
             }
 
             inputFile.close();
@@ -260,7 +282,6 @@ bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
         }
     
     }
-
 
     return true;
 }
@@ -318,6 +339,7 @@ bool RasterModelEuler_NLP::eval_g(Index n, const Number* x, bool new_x, Index m,
                 // I constraint
             g[acc_idx] = x[get_i_index(k+1, i)] - x[get_i_index(k, i)] - (
                 m_beta * x[get_s_index(k, i)] * coupling_term -
+                // m_control_rate * x[get_f_index(k, i)]) * m_time_step;
                 m_control_rate * x[get_f_index(k, i)] * x[get_i_index(k, i)]) * m_time_step;
             acc_idx += 1;
         }
@@ -328,6 +350,7 @@ bool RasterModelEuler_NLP::eval_g(Index n, const Number* x, bool new_x, Index m,
         g[acc_idx] = 0.0;
         for (Index i=0; i<m_ncells; i++){
             g[acc_idx] += x[get_f_index(k, i)] * x[get_i_index(k, i)];
+            // g[acc_idx] += x[get_f_index(k, i)];
         }
         acc_idx += 1;
     }
@@ -342,6 +365,14 @@ bool RasterModelEuler_NLP::eval_g(Index n, const Number* x, bool new_x, Index m,
         g[acc_idx] = x[get_i_index(0, i)];
         acc_idx += 1;
     }
+
+    // // Constraints on number treated
+    // for (Index k=0; k<(m_n_segments+1); k++) {
+    //     for (Index i=0; i<m_ncells; i++) {
+    //         g[acc_idx] = x[get_i_index(k, i)] - x[get_f_index(k, i)];
+    //         acc_idx++;
+    //     }
+    // }
 
     assert(acc_idx == m);
 
@@ -431,6 +462,19 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
             count++;
             constraint_count++;
         }
+
+        // // Constraints on number treated
+        // for (Index k=0; k<(m_n_segments+1); k++) {
+        //     for (Index i=0; i<m_ncells; i++) {
+        //         iRow[count] = constraint_count;
+        //         jCol[count] = get_i_index(k, i);
+        //         count++;
+        //         iRow[count] = constraint_count;
+        //         jCol[count] = get_f_index(k, i);
+        //         count++;
+        //         constraint_count++;
+        //     }
+        // }
     
         assert(count == nele_jac);
 
@@ -471,12 +515,14 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     values[count] = -m_beta * x[get_s_index(k, i)] * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
                     if (i == *it){
                         values[count] += x[get_f_index(k, i)] * m_control_rate * m_time_step - 1.0;
+                        // values[count] -= 1.0;
                     }
                     count++;
                 }
                 values[count] = 1.0;
                 count++;
                 values[count] = m_control_rate * x[get_i_index(k, i)] * m_time_step;
+                // values[count] = m_control_rate * m_time_step;
                 count++;
             }
         }
@@ -489,6 +535,7 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
             }
             for (Index i=0; i<m_ncells; i++){
                 values[count] = x[get_i_index(k, i)];
+                // values[count] = 1.0;
                 count++;
             }
         }
@@ -503,6 +550,16 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
             values[count] = 1.0;
             count++;
         }
+
+        // // Constraints on number treated
+        // for (Index k=0; k<(m_n_segments+1); k++) {
+        //     for (Index i=0; i<m_ncells; i++) {
+        //         values[count] = 1.0;
+        //         count++;
+        //         values[count] = -1.0;
+        //         count++;
+        //     }
+        // }
     
         assert(count == nele_jac);
     }

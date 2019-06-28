@@ -8,7 +8,7 @@ import theano
 from scipy.optimize import minimize
 from IndividualSimulator.utilities import output_data
 import raster_tools
-import raster_model
+from RasterModel import raster_model
 
 def fit_raster_MCMC(kernel_generator, kernel_params, data_stub=None, nsims=None, mcmc_params=None,
                     likelihood_func=None, target_raster=None):

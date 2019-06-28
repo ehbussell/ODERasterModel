@@ -1,7 +1,7 @@
 import unittest
 import os
-import pdb
 import glob
+import warnings
 import numpy as np
 import raster_tools
 import IndividualSimulator
@@ -10,6 +10,12 @@ import raster_model
 
 class NonSpatialTests(unittest.TestCase):
     """Test fitting of raster model in non-spatial context."""
+
+    def __init__(self, *args, **kwargs):
+        self.do_asserts = kwargs.pop('do_asserts', True)
+        super(NonSpatialTests, self).__init__(*args, **kwargs)
+        if not self.do_asserts:
+            warnings.warn("Not carrying out assertions!")
 
     @classmethod
     def setUpClass(cls):
@@ -87,7 +93,8 @@ class NonSpatialTests(unittest.TestCase):
             kernel_jac=self._nonspatial_jac_generator)
 
         # Assert beta value is close to that used in simulation
-        self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
+        if self.do_asserts:
+            self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
 
         return fitted_params["beta"]
 
@@ -104,7 +111,8 @@ class NonSpatialTests(unittest.TestCase):
             kernel_jac=self._nonspatial_jac_generator)
 
         # Assert beta value is close to that used in simulation
-        self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
+        if self.do_asserts:
+            self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.01)
 
         return fitted_params["beta"]
 
@@ -130,10 +138,9 @@ class NonSpatialTests(unittest.TestCase):
             model, self._nonspatial_generator, {"beta": [0, 0.1]}, self._data_stub,
             dimensions=(1, 1), raw_output=True)
 
-        print(fit)
-
         # Assert beta value is close to that used in simulation
-        self.assertLess(abs((self._beta_val-fitted_params['beta'])/self._beta_val), 0.05)
+        if self.do_asserts:
+            self.assertLess(abs((self._beta_val-fitted_params['beta'])/self._beta_val), 0.05)
 
         return fitted_params["beta"]
 
@@ -149,6 +156,12 @@ class NonSpatialTests(unittest.TestCase):
 
 class SpatialTests(unittest.TestCase):
     """Test fitting of raster model in spatial context."""
+
+    def __init__(self, *args, **kwargs):
+        self.do_asserts = kwargs.pop('do_asserts', True)
+        super(SpatialTests, self).__init__(*args, **kwargs)
+        if not self.do_asserts:
+            warnings.warn("Not carrying out assertions!")
 
     @classmethod
     def setUpClass(cls):
@@ -246,8 +259,10 @@ class SpatialTests(unittest.TestCase):
         print(fitted_params, raw_output)
 
         # Assert beta and scale values are close to those used in simulation
-        self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.05)
-        self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+        if self.do_asserts:
+            self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.05)
+            self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+
         return fitted_params['beta'], fitted_params['scale']
 
     def test_spatial_partial(self):
@@ -266,8 +281,10 @@ class SpatialTests(unittest.TestCase):
         print(fitted_params, raw_output)
 
         # Assert beta and scale values are close to those used in simulation
-        self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.05)
-        self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+        if self.do_asserts:
+            self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.05)
+            self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+
         return fitted_params['beta'], fitted_params['scale']
 
     @classmethod
@@ -282,6 +299,12 @@ class SpatialTests(unittest.TestCase):
 
 class TargetRasterTests(unittest.TestCase):
     """Test fitting functions when only a subset of data is used for fitting."""
+
+    def __init__(self, *args, **kwargs):
+        self.do_asserts = kwargs.pop('do_asserts', True)
+        super(TargetRasterTests, self).__init__(*args, **kwargs)
+        if not self.do_asserts:
+            warnings.warn("Not carrying out assertions!")
 
     @classmethod
     def setUpClass(cls):
@@ -403,8 +426,9 @@ class TargetRasterTests(unittest.TestCase):
 
         # Assert beta and scale values are close to those used in simulation
         # Specifically allow 10% for beta since data subsetting will result in overestimation
-        self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.1)
-        self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
+        if self.do_asserts:
+            self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.1)
+            self.assertTrue(abs((self._scale_val-fitted_params['scale'])/self._scale_val) < 0.05)
 
     def test_aggregate_fitting(self):
         """Test fitting when simulation hosts aggregated to reduced resolution."""
@@ -438,8 +462,9 @@ class TargetRasterTests(unittest.TestCase):
 
         # Assert beta and scale values are close to those used in simulation
         # Specifically allow 10% for beta since data subsetting will result in overestimation
-        self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.1)
-        self.assertTrue(abs((self._scale_val-3*fitted_params['scale'])/self._scale_val) < 0.05)
+        if self.do_asserts:
+            self.assertTrue(abs((self._beta_val-fitted_params['beta'])/self._beta_val) < 0.1)
+            self.assertTrue(abs((self._scale_val-3*fitted_params['scale'])/self._scale_val) < 0.05)
 
     @classmethod
     def tearDownClass(cls):

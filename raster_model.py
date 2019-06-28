@@ -115,7 +115,7 @@ class RasterModel:
         for cell in range(self.ncells):
             s_states = [x[2*cell] for i, x in enumerate(xs)]
             i_states = [x[2*cell+1] for i, x in enumerate(xs)]
-            f_states = [control_scheme(ts[i], xs[i])[cell] for i, x in enumerate(xs)]
+            f_states = [control_scheme(ts[i])[cell] for i, x in enumerate(xs)]
             s_dict['Cell' + str(cell)] = s_states
             i_dict['Cell' + str(cell)] = i_states
             f_dict['Cell' + str(cell)] = f_states
@@ -219,7 +219,7 @@ class RasterModel:
         dX = np.zeros(len(X))
         S_state = X[0::2]
         I_state = X[1::2]
-        control_val = control(t, X)
+        control_val = control(t)
         infection_terms = (self.params['primary_rate'] * S_state +
                            self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 
@@ -249,16 +249,21 @@ class RasterRun:
         # TODO implement budget plot
         pass
 
-    def get_plot(self, time, ax_state, ax_control):
+    def get_plot(self, time, ax_state, ax_control=None):
         idx = int(self.results_s.index[self.results_s['time'] == time][0])
         print(idx)
         data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx], self.results_f.iloc[idx]*self.results_i.iloc[idx])
         colours1, colours2 = self._get_colours(data_rows)
         im1 = ax_state.imshow(colours1, origin="upper")
-        im2 = ax_control.imshow(colours2, origin="upper")
+        if ax_control is not None:
+            im2 = ax_control.imshow(colours2, origin="upper")
+        else:
+            im2 = None
         time_text = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
                              transform=ax_state.transAxes, weight="bold", fontsize=12,
                              bbox=dict(facecolor='white', alpha=0.6))
+        
+        return im1, im2
 
     def make_video(self, video_length=5):
         """Make animation of raster run."""

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 using namespace Ipopt;
 
@@ -190,10 +191,10 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
                 x[get_s_index(k+1, i)] = x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step);
                 acc_idx++;
                 // Next I
-                x[get_i_index(k+1, i)] = x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step;
+                x[get_i_index(k+1, i)] = x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step - x[get_i_index(k, i)]*x[get_f_index(k, i)]*m_time_step;
                 acc_idx++;
                 // Next f
-                x[get_f_index(k+1, i)] = 0.0;
+                x[get_f_index(k+1, i)] = 1.0;
                 acc_idx++;
             }
         }
@@ -201,18 +202,22 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
         assert(acc_idx == n);
     } else {
         // Initialise from previous results files
+        std::string line;
         std::string tmp;
+        std::stringstream iss;
         // Read S input file
         std::ifstream inputFile(m_start_file_stub + "_S.csv");
         if (inputFile){
-            std::getline(inputFile, tmp);
-
+            std::getline(inputFile, line);
             for (Index k=0; k<(m_n_segments+1); k++){
-                std::getline(inputFile, tmp, ',');
+                std::getline(inputFile, line);
+                iss << line;
+                std::getline(iss, tmp, ',');
                 for (Index i=0; i<m_ncells; i++){
-                    std::getline(inputFile, tmp, ',');
+                    std::getline(iss, tmp, ',');
                     x[get_s_index(k, i)] = std::stod(tmp);
                 }
+                iss.clear();
             }
 
             inputFile.close();
@@ -224,14 +229,16 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
         // Read I input file
         inputFile.open(m_start_file_stub + "_I.csv");
         if (inputFile){
-            std::getline(inputFile, tmp);
-
+            std::getline(inputFile, line);
             for (Index k=0; k<(m_n_segments+1); k++){
-                std::getline(inputFile, tmp, ',');
+                std::getline(inputFile, line);
+                iss << line;
+                std::getline(iss, tmp, ',');
                 for (Index i=0; i<m_ncells; i++){
-                    std::getline(inputFile, tmp, ',');
+                    std::getline(iss, tmp, ',');
                     x[get_i_index(k, i)] = std::stod(tmp);
                 }
+                iss.clear();
             }
 
             inputFile.close();
@@ -243,14 +250,16 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
         // Read f input file
         inputFile.open(m_start_file_stub + "_f.csv");
         if (inputFile){
-            std::getline(inputFile, tmp);
-
+            std::getline(inputFile, line);
             for (Index k=0; k<(m_n_segments+1); k++){
-                std::getline(inputFile, tmp, ',');
+                std::getline(inputFile, line);
+                iss << line;
+                std::getline(iss, tmp, ',');
                 for (Index i=0; i<m_ncells; i++){
-                    std::getline(inputFile, tmp, ',');
+                    std::getline(iss, tmp, ',');
                     x[get_f_index(k, i)] = std::stod(tmp);
                 }
+                iss.clear();
             }
 
             inputFile.close();
@@ -258,8 +267,8 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
             std::cerr << "Cannot open start file for reading - " << m_start_file_stub + "_f.csv" << std::endl;
             return false;
         }
+    
     }
-
 
     return true;
 }
