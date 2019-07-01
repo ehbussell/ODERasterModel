@@ -2,15 +2,14 @@
 
 import warnings
 import subprocess
-import pdb
 import os
 import numpy as np
 import pandas as pd
 from scipy import integrate
+from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from matplotlib import animation
-import bocop_utils
 import raster_tools
 
 
@@ -36,8 +35,8 @@ class RasterModel:
 
     def __init__(self, params, host_density_file="HostDensity_raster.txt",
                  initial_s_file="S0_raster.txt", initial_i_file="I0_raster.txt"):
-        self._required_keys = ['inf_rate', 'control_rate', 'max_budget_rate',
-                               'coupling', 'times', 'max_hosts', 'primary_rate']
+        self._required_keys = ['inf_rate', 'control_rate', 'coupling', 'times',
+                               'max_hosts', 'primary_rate']
 
         for key in self._required_keys:
             if key not in params:
@@ -130,44 +129,10 @@ class RasterModel:
         """Run policy for no control, to use with run_scheme."""
         return [0]*self.ncells
 
-    def optimise_BOCOP(self, BOCOP_dir=None, verbose=True):
-        """Run BOCOP optimisation of model"""
-
-        if BOCOP_dir is None:
-            BOCOP_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "BOCOP")
-        set_BOCOP_params(self.params, self.state_init, folder=BOCOP_dir)
-
-        if verbose is True:
-            subprocess.run([os.path.join(BOCOP_dir, "bocop.exe")], cwd=BOCOP_dir)
-        else:
-            subprocess.run([os.path.join(BOCOP_dir, "bocop.exe")],
-                           cwd=BOCOP_dir, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-
-        Xt, Lt, Ut = bocop_utils.readSolFile(BOCOP_dir + "/problem.sol")
-
-        s_dict = {'time': self.params['times']}
-        i_dict = {'time': self.params['times']}
-        f_dict = {'time': self.params['times']}
-
-        for cell in range(self.ncells):
-            s_states = [Xt(t)[2*cell] for t in self.params['times']]
-            i_states = [Xt(t)[2*cell+1] for t in self.params['times']]
-            f_states = [Ut(t)[cell] for t in self.params['times']]
-            s_dict['Cell' + str(cell)] = s_states
-            i_dict['Cell' + str(cell)] = i_states
-            f_dict['Cell' + str(cell)] = f_states
-
-        results_s = pd.DataFrame(s_dict)
-        results_i = pd.DataFrame(i_dict)
-        results_f = pd.DataFrame(f_dict)
-
-        return RasterRun(self.params, (results_s, results_i, results_f))
-
-    def optimise_Ipopt(self, options=None, verbose=True, method="euler", warm_start_stub=None):
+    def optimise_ipopt(self, options=None, verbose=True, method="euler", warm_start_stub=None):
         """Run optimisation using Ipopt"""
 
-        Ipopt_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Ipopt")
+        ipopt_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Ipopt")
 
         if method == "euler":
             cmd_options = [
@@ -201,9 +166,9 @@ class RasterModel:
                     outfile.write(str(key) + " " + str(value) + "\n")
 
         if verbose is True:
-            subprocess.run([os.path.join(Ipopt_dir, "RasterModel.exe"), *cmd_options])
+            subprocess.run([os.path.join(ipopt_dir, "RasterModel.exe"), *cmd_options])
         else:
-            subprocess.run([os.path.join(Ipopt_dir, "RasterModel.exe"), *cmd_options],
+            subprocess.run([os.path.join(ipopt_dir, "RasterModel.exe"), *cmd_options],
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
 
@@ -234,54 +199,56 @@ class RasterModel:
 
 
 class RasterRun:
-    """Class to hold results of RasterModel run(s), stored alongside model setup."""
+    """Class to hold results of RasterModel run(s) adn/or optimisations, for plotting/storage."""
 
     def __init__(self, model_params, results):
         self.model_params = model_params
         self.results_s, self.results_i, self.results_f = results
 
-        val_cols = [c for c in self.results_i.columns if c.startswith('Cell')]
-        # print(self.results_i[val_cols].max().max())
-        self.max_budget_used = self.results_i[val_cols].max().max()
-
-    def plot_budget(self):
-        """Plot budget expenditure over time."""
-        # TODO implement budget plot
-        pass
-
     def get_plot(self, time, ax_state, ax_control=None):
+        """Generate plot of state and control at specified time."""
+
+        # Find index in results coresponding to required time
         idx = int(self.results_s.index[self.results_s['time'] == time][0])
-        print(idx)
-        data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx], self.results_f.iloc[idx]*self.results_i.iloc[idx])
+
+        data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx], self.results_f.iloc[idx])
         colours1, colours2 = self._get_colours(data_rows)
+
         im1 = ax_state.imshow(colours1, origin="upper")
+
         if ax_control is not None:
             im2 = ax_control.imshow(colours2, origin="upper")
         else:
             im2 = None
-        time_text = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
-                             transform=ax_state.transAxes, weight="bold", fontsize=12,
-                             bbox=dict(facecolor='white', alpha=0.6))
-        
+
+        # Add text showing time
+        _ = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
+                          transform=ax_state.transAxes, weight="bold", fontsize=12,
+                          bbox=dict(facecolor='white', alpha=0.6))
+
         return im1, im2
 
     def make_video(self, video_length=5):
         """Make animation of raster run."""
 
+        # Video properties
         video_length *= 1000
         fps = 30
         nframes = fps * video_length
         interval = max([1, int(len(self.results_s) / nframes)])
         nframes = int(np.ceil(len(self.results_s)/interval)) + 1
 
+        # Colour mappings for control
         cmap = plt.get_cmap("Oranges")
-        cNorm = colors.Normalize(vmin=0, vmax=self.max_budget_used)
+        cNorm = colors.Normalize(vmin=0, vmax=1)
         scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
 
+        # Join indices into a list
         indices = np.r_[0:len(self.results_s):interval, -1]
 
         times = np.array(self.results_s['time'].values[indices])
 
+        # Extract correct data points
         size = (len(times), *self.model_params['dimensions'])
         s_values = np.array([self.results_s['Cell'+str(cell)].values[indices]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
@@ -289,11 +256,11 @@ class RasterRun:
         i_values = np.array([self.results_i['Cell'+str(cell)].values[indices]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         i_values = np.reshape(i_values, size)
-        f_values = np.array([self.results_f['Cell'+str(cell)].values[indices]*
-                             self.results_i['Cell'+str(cell)].values[indices]
+        f_values = np.array([self.results_f['Cell'+str(cell)].values[indices]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         f_values = np.reshape(f_values, size)
 
+        # Generate matrices for state and control colours
         colours = np.zeros((len(times), *self.model_params['dimensions'], 4))
         colours[:, :, :, 0] = i_values/self.model_params['max_hosts']
         colours[:, :, :, 1] = s_values/self.model_params['max_hosts']
@@ -334,19 +301,17 @@ class RasterRun:
     def plot(self, video_length=5):
         """View animation of raster run."""
 
-        im_ani = self.make_video(video_length)
-
+        _ = self.make_video(video_length)
         plt.show()
 
     def export_video(self, filename, video_length=5):
-        """Export video as html"""
+        """Export video as mp4"""
 
         im_ani = self.make_video(video_length)
 
-        plt.rcParams['animation.ffmpeg_path'] = 'C:\\Users\\Elliott\\Documents\\ffmpeg-20171107-ce52e43-win64-static\\bin\\ffmpeg.exe'
-        Writer = animation.writers['html']
-        writer = Writer(fps=30, bitrate=500)
-        im_ani.save(filename+".html", writer=writer)
+        Writer = animation.writers['ffmpeg']
+        writer = Writer(fps=30, metadata=dict(artist='Me'), bitrate=500, codec="h264")
+        im_ani.save(filename+'.mp4', writer=writer, dpi=300)
 
     def export(self, filestub):
         """Export results to file(s)."""
@@ -356,13 +321,16 @@ class RasterRun:
 
     def _get_colours(self, data_rows):
         """Calculate cell colours"""
+
         cmap = plt.get_cmap("Oranges")
-        cNorm = colors.Normalize(vmin=0, vmax=self.max_budget_used)
-        scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
+        cnorm = colors.Normalize(vmin=0, vmax=1.0)
+        scalar_map = plt.cm.ScalarMappable(norm=cnorm, cmap=cmap)
 
         ncells = np.prod(self.model_params['dimensions'])
-        colours1 = np.zeros((self.model_params['dimensions'][0], self.model_params['dimensions'][1], 4))
-        colours2 = np.zeros((self.model_params['dimensions'][0], self.model_params['dimensions'][1], 4))
+        colours1 = np.zeros((self.model_params['dimensions'][0],
+                             self.model_params['dimensions'][1], 4))
+        colours2 = np.zeros((self.model_params['dimensions'][0],
+                             self.model_params['dimensions'][1], 4))
 
         for i in range(ncells):
             S = data_rows[0]['Cell' + str(i)]
@@ -370,73 +338,69 @@ class RasterRun:
             B = data_rows[2]['Cell' + str(i)]
             col = i % self.model_params['dimensions'][1]
             row = int(i/self.model_params['dimensions'][1])
-            colours1[row, col, :] = (I/self.model_params['max_hosts'], S/self.model_params['max_hosts'], 0, 1)
-            # if I > 0:
-            #     colours1[col, row, :] = (I/self.model_params['max_hosts'], 0, 0, 1)
-            # else:
-            #     colours1[col, row, :] = (0, S/self.model_params['max_hosts'], 0, 1)
+            colours1[row, col, :] = (I/self.model_params['max_hosts'],
+                                     S/self.model_params['max_hosts'], 0, 1)
 
-            colours2[row, col, :] = scalarMap.to_rgba(B)
+            colours2[row, col, :] = scalar_map.to_rgba(B)
 
         return colours1, colours2
 
 
-def set_BOCOP_params(params, state_init, folder="BOCOP"):
-    """Set up BOCOP initialisation files, ready for optimiation."""
+class RasterOptimisation:
+    """Class to hold results of Ipopt optimisations, and model setup."""
 
-    all_lines = []
-    # Dimensions
-    all_lines.append("# Dimensions\n")
-    ncells = np.prod(params['dimensions'])
-    dim_string = str(2*ncells) + " " + str(2*ncells) + " " + str(ncells) + " 0 0 1\n"
-    all_lines.append(dim_string)
+    def __init__(self, output_file_stub="output", input_file_stub=""):
+        # First read setup parameters from log file.
+        with open(output_file_stub + ".log", "r") as infile:
+            setup_lines = infile.readlines()
 
-    # Initial conditions
-    all_lines.append("# Initial Conditions\n")
-    for cond in state_init:
-        init_string = str(cond) + " " + str(cond) + " equal\n"
-        all_lines.append(init_string)
+        setup_dict = {}
+        for line in setup_lines:
+            arg, val = line.split()
+            if arg != "START_FILE_STUB":
+                val = float(val)
 
-    # State bounds
-    all_lines.append("# State Bounds\n")
-    for i in range(2*ncells):
-        all_lines.append(">" + str(i) + ":1:" + str(i) + " 0 2e+020 lower\n")
+            setup_dict[arg.lower()] = val
 
-    # Control bounds
-    all_lines.append("# Control Bounds\n")
-    for i in range(ncells):
-        all_lines.append("0 1 both\n")
+        self.setup = setup_dict
 
-    # Path consraint bounds
-    all_lines.append("# Path Constraint Bounds\n")
-    all_lines.append("-2e+020 " + str(params['max_budget_rate']) + " upper\n")
+        self.results_s = pd.read_csv(output_file_stub + "_S.csv")
+        self.results_i = pd.read_csv(output_file_stub + "_I.csv")
+        self.results_f = pd.read_csv(output_file_stub + "_f.csv")
 
-    with open(folder + "/problem.bounds", "w") as f:
-        f.writelines(all_lines)
+        model_params = {}
+        model_params['inf_rate'] = setup_dict['beta']
+        model_params['control_rate'] = setup_dict['control_rate']
+        model_params['max_hosts'] = setup_dict['max_hosts']
+        model_params['primary_rate'] = 0.0
 
-    with open(folder + "/problem.constants", "r") as f:
-        all_lines = f.readlines()
+        s0_raster = raster_tools.RasterData.from_file(input_file_stub + "S0_raster.txt")
+        i0_raster = raster_tools.RasterData.from_file(input_file_stub + "I0_raster.txt")
+        n_raster = raster_tools.RasterData.from_file(input_file_stub + "HostDensity_raster.txt")
 
-    all_lines[5] = str(params['inf_rate']) + "\n"
-    all_lines[6] = str(params['control_rate']) + "\n"
-    all_lines[7] = str(params['dimensions'][0]) + "\n"
-    all_lines[8] = str(params['dimensions'][1]) + "\n"
-    all_lines[9] = str(params['scale']) + "\n"
+        dimensions = (9, 11)
+        ncells = np.prod(dimensions)
+        coupling = np.zeros((ncells, ncells))
+        for i in range(ncells):
+            for j in range(ncells):
+                dx = abs((i % dimensions[0]) - (j % dimensions[0]))
+                dy = abs(int(i/dimensions[0]) - int(j/dimensions[0]))
+                dist = np.sqrt(dx*dx + dy*dy)
+                coupling[i, j] = np.exp(-dist/0.294171) / (2 * np.pi * 0.294171 * 0.294171)
+        model_params['coupling'] = coupling
 
-    with open(folder + "/problem.constants", "w") as f:
-        f.writelines(all_lines)
+        model_params['times'] = self.results_f['time']
 
-    with open(folder + "/problem.def", "r") as f:
-        all_lines = f.readlines()
+        self.model_params = model_params
+        self.s0_raster = s0_raster.array.flatten() * n_raster.array.flatten()
+        self.i0_raster = i0_raster.array.flatten() * n_raster.array.flatten()
 
-    nsteps = str(len(params['times']) - 1)
-    all_lines[5] = "time.initial double " + str(params['times'][0]) + "\n"
-    all_lines[6] = "time.final double " + str(params['times'][-1]) + "\n"
-    all_lines[18] = "discretization.steps integer " + nsteps + "\n"
+    def run_model(self):
+        """Run raster ODE model, using this optimised control."""
 
-    all_lines[9] = "state.dimension integer " + str(2*ncells) + "\n"
-    all_lines[10] = "control.dimension integer " + str(ncells) + "\n"
-    all_lines[14] = "boundarycond.dimension integer " + str(2*ncells) + "\n"
+        model = RasterModel(self.model_params)
 
-    with open(folder + "/problem.def", "w") as f:
-        f.writelines(all_lines)
+        control_scheme = interp1d(self.results_f['time'], self.results_f.values[:, 1:].T,
+                                  kind="zero", fill_value="extrapolate")
+
+        return model.run_scheme(control_scheme)
