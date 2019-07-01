@@ -4,7 +4,7 @@
 #include "Kernel.hpp"
 #include "RasterTools.hpp"
 #include <fstream>
-
+#include <sstream>
 #include <iostream>
 
 using namespace Ipopt;
@@ -107,6 +107,29 @@ int main(int argc, char* argv[])
     }
     else {
         std::cout << std::endl << std::endl << "*** The problem FAILED!" << std::endl;
+    }
+
+    std::vector<std::string> arg_names = {
+        "METHOD",
+        "BETA",
+        "CONTROL_RATE",
+        "BUDGET",
+        "FINAL_TIME",
+        "N_SEGMENTS",
+        "MAX_HOSTS",
+        "START_FILE_STUB"
+    };
+
+    // Write setup output file
+    std::ofstream outputFile("output.log");
+    if (outputFile){
+        for (Index i=0; i<(argc-1); i++){
+            outputFile << arg_names[i] << " " << argv[i+1] << std::endl;
+        }
+        outputFile << "EXIT_CODE " << status << std::endl;
+        outputFile.close();
+    } else {
+        std::cerr << "Cannot open log file for writing - " << "output.log" << std::endl;
     }
 
     // As the SmartPtrs go out of scope, the reference count
