@@ -125,6 +125,7 @@ int main(int argc, char* argv[])
         "FINAL_TIME",
         "N_SEGMENTS",
         "MAX_HOSTS",
+        "CONTROL_SKIP",
         "START_FILE_STUB"
     };
 
