@@ -50,6 +50,7 @@ int main(int argc, char* argv[])
         init_state.push_back(host_raster.m_array[i]*s0_raster.m_array[i]*max_hosts);
         init_state.push_back(host_raster.m_array[i]*i0_raster.m_array[i]*max_hosts);
         init_state.push_back(0.0);
+        init_state.push_back(0.0);
     }
 
     // Read in objective weighting raster (terminal cell value)

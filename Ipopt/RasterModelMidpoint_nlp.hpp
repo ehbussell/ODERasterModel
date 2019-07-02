@@ -21,7 +21,7 @@ public:
     virtual ~RasterModelMidpoint_NLP();
 
     double m_beta, m_control_rate, m_budget, m_final_time, m_time_step;
-    int m_nrow, m_ncol, m_ncells, m_n_segments, m_trunc_dist, m_control_skip;
+    int m_nrow, m_ncol, m_ncells, m_n_segments, m_trunc_dist, m_control_skip, m_n_control_points;
     std::vector<double> m_init_state;
     bool m_warm_start;
     std::string m_start_file_stub;
@@ -29,8 +29,9 @@ public:
 
     int get_s_index(int time_idx, int space_idx);
     int get_i_index(int time_idx, int space_idx);
-    int get_f_index(int time_idx, int space_idx);
-    std::list<int> get_connected(int space_idx);
+    int get_u_index(int time_idx, int space_idx);
+    int get_v_index(int time_idx, int space_idx);
+     std::list<int> get_connected(int space_idx);
 
     /** Method to return some info about the nlp */
     virtual bool get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
