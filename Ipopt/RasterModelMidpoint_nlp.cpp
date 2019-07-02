@@ -8,7 +8,7 @@
 using namespace Ipopt;
 
 // constructor
-RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state)
+RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, int control_skip)
     : m_beta(beta),
     m_control_rate(control_rate),
     m_budget(budget),
@@ -20,12 +20,13 @@ RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rat
     m_time_step(final_time / n_segments),
     m_ncells(nrow * ncol),
     m_warm_start(false),
-    m_trunc_dist(2)
+    m_trunc_dist(2),
+    m_control_skip(control_skip)
 {}
 
 // constructor with warm start
-RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, std::string start_file_stub)
-: RasterModelMidpoint_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state)
+RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, int control_skip, std::string start_file_stub)
+: RasterModelMidpoint_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, control_skip)
 {
 m_warm_start = true;
 m_start_file_stub = start_file_stub;
@@ -38,17 +39,31 @@ RasterModelMidpoint_NLP::~RasterModelMidpoint_NLP()
 // Evaluate correct state indices
 int RasterModelMidpoint_NLP::get_s_index(int time_idx, int space_idx)
 {
-    return 3*space_idx + time_idx*(3 * m_ncells);
+    int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
+    if (time_idx % (m_control_skip + 1) == 0){
+        return 3*space_idx + time_idx*(3 * m_ncells) - (prev_skip*m_ncells);
+    } else {
+        prev_skip += (time_idx - 1) % (m_control_skip + 1);
+        return 2*space_idx + time_idx*(3 * m_ncells) - (prev_skip*m_ncells);
+    }
+
 }
 
 int RasterModelMidpoint_NLP::get_i_index(int time_idx, int space_idx)
 {
-    return 1 + 3*space_idx + time_idx*(3 * m_ncells);
+    int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
+    if (time_idx % (m_control_skip + 1) == 0){
+        return 1 + 3*space_idx + time_idx*(3 * m_ncells) - (prev_skip*m_ncells);
+    } else {
+        prev_skip += (time_idx - 1) % (m_control_skip + 1);
+        return 1 + 2*space_idx + time_idx*(3 * m_ncells) - (prev_skip*m_ncells);
+    }
 }
 
 int RasterModelMidpoint_NLP::get_f_index(int time_idx, int space_idx)
 {
-    return 2 + 3*space_idx + time_idx*(3 * m_ncells);
+    int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
+    return 2 + 3*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(3 * m_ncells) - (prev_skip*m_ncells);
 }
 
 std::list<int> RasterModelMidpoint_NLP::get_connected(int space_idx)
@@ -170,8 +185,10 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
     assert(init_lambda == false);
 
     // initialize to the given starting point
-    for (Index i=0; i<(3*m_ncells); i++){
-        x[i] = m_init_state[i];
+    for (Index i=0; i<(m_ncells); i++){
+        x[get_s_index(0, i)] = m_init_state[3*i];
+        x[get_i_index(0, i)] = m_init_state[3*i+1];
+        x[get_f_index(0, i)] = m_init_state[3*i+2];
     }
 
     Index acc_idx = 3*m_ncells;
@@ -190,17 +207,17 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
                     coupling_term += kernel(i, *it, m_nrow, m_ncol) * x[get_i_index(k, *it)];
                 }
                 // Next S
-                x[get_s_index(k+1, i)] = std::max(0.0, x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step));
+                x[get_s_index(k+1, i)] = std::max(0.0, x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step) - x[get_s_index(k, i)]*x[get_f_index(k, i)]*m_time_step);
                 acc_idx++;
                 // Next I
-                x[get_i_index(k+1, i)] = std::max(0.0, x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step - x[get_i_index(k, i)]*x[get_f_index(k, i)]*m_time_step);
+                x[get_i_index(k+1, i)] = std::max(0.0, x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step);
                 acc_idx++;
                 // Next f
                 x[get_f_index(k+1, i)] = 0.0;
                 acc_idx++;
             }
         }
-        
+
         assert(acc_idx == n);
     } else {
         // Initialise from previous results files
@@ -269,7 +286,7 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
             std::cerr << "Cannot open start file for reading - " << m_start_file_stub + "_f.csv" << std::endl;
             return false;
         }
-    
+
     }
 
     return true;
@@ -319,17 +336,19 @@ bool RasterModelMidpoint_NLP::eval_g(Index n, const Number* x, bool new_x, Index
             for (it = data.begin(); it != data.end(); ++it){
                 coupling_term += kernel(i, *it, m_nrow, m_ncol) * 0.5 * (x[get_i_index(k, *it)] + x[get_i_index(k+1, *it)]);
             }
-            
+
             // S constraint
             g[acc_idx] = x[get_s_index(k+1, i)] - x[get_s_index(k, i)] + (
-                m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * coupling_term * m_time_step);
+                m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) *
+                coupling_term + m_control_rate * 0.5 *
+                (x[get_f_index(k, i)] + x[get_f_index(k+1, i)]) * 0.5 *
+                (x[get_s_index(k, i)] + x[get_s_index(k+1, i)])) * m_time_step;
             acc_idx += 1;
 
             // I constraint
             g[acc_idx] = x[get_i_index(k+1, i)] - x[get_i_index(k, i)] - (
-                m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * coupling_term -
-                m_control_rate * 0.5 * (x[get_f_index(k, i)] + x[get_f_index(k+1, i)]) * 0.5 * (
-                    x[get_i_index(k, i)] + x[get_i_index(k+1, i)])) * m_time_step;
+                m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * coupling_term
+                ) * m_time_step;
             acc_idx += 1;
         }
     }
@@ -395,8 +414,14 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     jCol[count] = get_i_index(k+1, *it);
                     count++;
                 }
+                iRow[count] = constraint_count;
+                jCol[count] = get_f_index(k, i);
+                count++;
+                iRow[count] = constraint_count;
+                jCol[count] = get_f_index(k+1, i);
+                count++;
                 constraint_count++;
-      
+
                 // I continuity constraints
                 iRow[count] = constraint_count;
                 jCol[count] = get_s_index(k, i);
@@ -412,12 +437,6 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     jCol[count] = get_i_index(k+1, *it);
                     count++;
                 }
-                iRow[count] = constraint_count;
-                jCol[count] = get_f_index(k, i);
-                count++;
-                iRow[count] = constraint_count;
-                jCol[count] = get_f_index(k+1, i);
-                count++;
                 constraint_count++;
             }
         }
@@ -448,14 +467,14 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
             count++;
             constraint_count++;
         }
-    
+
         for (Index i=0; i<m_ncells; i++){
             iRow[count] = constraint_count;
             jCol[count] = get_i_index(0, i);
             count++;
             constraint_count++;
         }
-    
+
         assert(count == nele_jac);
 
     }
@@ -466,7 +485,7 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
         double coupling_term;
         std::list<int>::iterator it;
         std::list<int> data;
-        
+
         for (Index i=0; i<m_ncells; i++){
             for (Index k=0; k<m_n_segments; k++){
                 // Calculate coupling term
@@ -478,6 +497,7 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
 
                 // S continuity constraints
                 values[count] = -1.0 + (m_beta * coupling_term * m_time_step) / 2;
+                values[count] += 0.25 * (x[get_f_index(k, i)] + x[get_f_index(k+1, i)]) * m_control_rate * m_time_step;
                 count++;
                 values[count] = values[count-1] + 2;
                 count++;
@@ -487,6 +507,10 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     values[count] = values[count-1];
                     count++;
                 }
+                values[count] = 0.25 * m_control_rate * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * m_time_step;
+                count++;
+                values[count] = values[count-1];
+                count++;
 
                 // I continuity constraints
                 values[count] = -0.5 * m_beta * coupling_term * m_time_step;
@@ -496,7 +520,7 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 for (it = data.begin(); it != data.end(); ++it){
                     values[count] = -0.5 * m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
                     if (i == *it){
-                        values[count] += 0.25 * (x[get_f_index(k, i)] + x[get_f_index(k+1, i)]) * m_control_rate * m_time_step - 1.0;
+                        values[count] -= 1.0;
                     }
                     count++;
                     values[count] = values[count-1];
@@ -505,10 +529,6 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     }
                     count++;
                 }
-                values[count] = 0.25 * m_control_rate * (x[get_i_index(k, i)] + x[get_i_index(k+1, i)]) * m_time_step;
-                count++;
-                values[count] = values[count-1];
-                count++;
             }
         }
 
@@ -530,12 +550,12 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
             values[count] = 1.0;
             count++;
         }
-    
+
         for (Index i=0; i<m_ncells; i++){
             values[count] = 1.0;
             count++;
         }
-    
+
         assert(count == nele_jac);
     }
 
@@ -554,7 +574,7 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
         Index count = 0;
         std::list<int>::iterator it;
         std::list<int> data;
-        
+
         for (Index i=0; i<m_ncells; i++){
             for (Index k=0; k<m_n_segments; k++){
                 // S continuity constraints
@@ -581,7 +601,39 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
                     iRow[count] = get_s_index(k, i);
                     count++;
                 }
-      
+                if (get_f_index(k, i) <= get_s_index(k, i)){
+                    iRow[count] = get_s_index(k, i);
+                    jCol[count] = get_f_index(k, i);
+                } else {
+                    iRow[count] = get_f_index(k, i);
+                    jCol[count] = get_s_index(k, i);
+                }
+                count++;
+                if (get_f_index(k, i) <= get_s_index(k+1, i)){
+                    iRow[count] = get_s_index(k+1, i);
+                    jCol[count] = get_f_index(k, i);
+                } else {
+                    iRow[count] = get_f_index(k, i);
+                    jCol[count] = get_s_index(k+1, i);
+                }
+                count++;
+                if (get_f_index(k+1, i) <= get_s_index(k, i)){
+                    iRow[count] = get_s_index(k, i);
+                    jCol[count] = get_f_index(k+1, i);
+                } else {
+                    iRow[count] = get_f_index(k+1, i);
+                    jCol[count] = get_s_index(k, i);
+                }
+                count++;
+                if (get_f_index(k+1, i) <= get_s_index(k+1, i)){
+                    iRow[count] = get_s_index(k+1, i);
+                    jCol[count] = get_f_index(k+1, i);
+                } else {
+                    iRow[count] = get_f_index(k+1, i);
+                    jCol[count] = get_s_index(k+1, i);
+                }
+                count++;
+
                 // I continuity constraints
                 for (it = data.begin(); it != data.end(); ++it){
                     if (i <= *it){
@@ -605,18 +657,6 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
                     jCol[count] = get_s_index(k, i);
                     count++;
                 }
-                iRow[count] = get_f_index(k, i);
-                jCol[count] = get_i_index(k, i);
-                count++;
-                iRow[count] = get_i_index(k+1, i);
-                jCol[count] = get_f_index(k, i);
-                count++;
-                iRow[count] = get_f_index(k+1, i);
-                jCol[count] = get_i_index(k, i);
-                count++;
-                iRow[count] = get_f_index(k+1, i);
-                jCol[count] = get_i_index(k+1, i);
-                count++;
             }
         }
 
@@ -639,26 +679,13 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
         Index constraint_count = 0;
         std::list<int>::iterator it;
         std::list<int> data;
-        
+
         for (Index i=0; i<m_ncells; i++){
             for (Index k=0; k<m_n_segments; k++){
                 // S continuity constraints
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
                     values[count] = lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;;
-                    count++;
-                    values[count] = values[count-1];
-                    count++;
-                    values[count] = values[count-1];
-                    count++;
-                    values[count] = values[count-1];
-                    count++;
-                }
-                constraint_count++;
-      
-                // I continuity constraints
-                for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = -lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;;
                     count++;
                     values[count] = values[count-1];
                     count++;
@@ -675,6 +702,19 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
                 count++;
                 values[count] = values[count-1];
                 count++;
+                constraint_count++;
+
+                // I continuity constraints
+                for (it = data.begin(); it != data.end(); ++it){
+                    values[count] = -lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;;
+                    count++;
+                    values[count] = values[count-1];
+                    count++;
+                    values[count] = values[count-1];
+                    count++;
+                    values[count] = values[count-1];
+                    count++;
+                }
                 constraint_count++;
             }
         }
@@ -716,7 +756,7 @@ void RasterModelMidpoint_NLP::finalize_solution(SolverReturn status,
             outputFile << i*m_time_step;
             for (Index j=0; j<m_ncells; j++){
                 outputFile << "," << x[get_s_index(i, j)];
-            }  
+            }
             outputFile << std::endl;
         }
         outputFile.close();
@@ -736,7 +776,7 @@ void RasterModelMidpoint_NLP::finalize_solution(SolverReturn status,
             outputFile << i*m_time_step;
             for (Index j=0; j<m_ncells; j++){
                 outputFile << "," << x[get_i_index(i, j)];
-            }  
+            }
             outputFile << std::endl;
         }
         outputFile.close();
@@ -756,7 +796,7 @@ void RasterModelMidpoint_NLP::finalize_solution(SolverReturn status,
             outputFile << i*m_time_step;
             for (Index j=0; j<m_ncells; j++){
                 outputFile << "," << x[get_f_index(i, j)];
-            }  
+            }
             outputFile << std::endl;
         }
         outputFile.close();

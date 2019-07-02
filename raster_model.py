@@ -19,7 +19,6 @@ class RasterModel:
     Initialisation requires a dictionary of the following parameters:
         'inf_rate':         Infection Rate,
         'control_rate':     Control Rate,
-        'max_budget_rate':  Maximum control expenditure,
         'coupling':         Transmission kernel,
         'times':            Times to solve for,
         'max_hosts':        Maximum number of host units per cell,
@@ -188,9 +187,9 @@ class RasterModel:
         infection_terms = (self.params['primary_rate'] * S_state +
                            self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 
-        dS = -1*infection_terms
-        dI = infection_terms - np.array([
-            0.0 + self.params['control_rate']*control_val[i] for i in range(self.ncells)])*I_state
+        dS = -1*infection_terms - np.array([
+            0.0 + self.params['control_rate']*control_val[i] for i in range(self.ncells)])*S_state
+        dI = infection_terms
 
         dX[0::2] = dS
         dX[1::2] = dI
@@ -378,7 +377,7 @@ class RasterOptimisation:
         i0_raster = raster_tools.RasterData.from_file(input_file_stub + "I0_raster.txt")
         n_raster = raster_tools.RasterData.from_file(input_file_stub + "HostDensity_raster.txt")
 
-        dimensions = (9, 11)
+        dimensions = (11, 9)
         ncells = np.prod(dimensions)
         coupling = np.zeros((ncells, ncells))
         for i in range(ncells):
@@ -386,7 +385,8 @@ class RasterOptimisation:
                 dx = abs((i % dimensions[0]) - (j % dimensions[0]))
                 dy = abs(int(i/dimensions[0]) - int(j/dimensions[0]))
                 dist = np.sqrt(dx*dx + dy*dy)
-                coupling[i, j] = np.exp(-dist/0.294171) / (2 * np.pi * 0.294171 * 0.294171)
+                if (dx <= 2) and (dy <= 2):
+                    coupling[i, j] = np.exp(-dist/0.210619) / (2 * np.pi * 0.210619 * 0.210619)
         model_params['coupling'] = coupling
 
         model_params['times'] = self.results_f['time']

@@ -12,8 +12,8 @@ using namespace Ipopt;
 int main(int argc, char* argv[])
 {
     // Check correct number of arguments
-    if (argc != 8 && argc != 9){
-        std::cerr << "Usage: " << argv[0] << " <METHOD> <BETA> <CONTROL RATE> <BUDGET> <FINAL TIME> <N SEGMENTS> <MAX HOSTS> <START FILE STUB>" << std::endl;
+    if (argc != 9 && argc != 10){
+        std::cerr << "Usage: " << argv[0] << " <METHOD> <BETA> <CONTROL RATE> <BUDGET> <FINAL TIME> <N SEGMENTS> <MAX HOSTS> <CONTROL SKIP> <START FILE STUB>" << std::endl;
         return 1;
     }
 
@@ -34,6 +34,7 @@ int main(int argc, char* argv[])
     int n_segments, max_hosts;
     n_segments = std::stoi(argv[6]);
     max_hosts = std::stoi(argv[7]);
+    int control_skip = std::stoi(argv[8]);
 
     // Extract initial state from rasters and save dimensions
     Raster host_raster = readRaster("HostDensity_raster.txt");
@@ -80,7 +81,7 @@ int main(int argc, char* argv[])
     if (discretise_method == 0){
         std::cout << std::endl << std::endl << "Using Euler method" << std::endl;
         SmartPtr<RasterModelEuler_NLP> mynlp;
-        if (argc == 9){
+        if (argc == 10){
             mynlp = new RasterModelEuler_NLP(
                 beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, argv[8]);
         } else {
@@ -92,12 +93,12 @@ int main(int argc, char* argv[])
     if (discretise_method == 1){
         std::cout << std::endl << std::endl << "Using Midpoint method" << std::endl;
         SmartPtr<RasterModelMidpoint_NLP> mynlp;
-        if (argc == 9){
+        if (argc == 10){
             mynlp = new RasterModelMidpoint_NLP(
-                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, argv[8]);
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, control_skip, argv[9]);
         } else {
             mynlp = new RasterModelMidpoint_NLP(
-                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state);
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, control_skip);
         }
         status = app->OptimizeTNLP(mynlp);
     }
