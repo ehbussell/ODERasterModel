@@ -109,7 +109,11 @@ bool RasterModelMidpoint_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
                              Index& nnz_h_lag, IndexStyleEnum& index_style)
 {
     // Number of optimised variables
-    n = 3 * m_ncells * (m_n_segments + 1);
+    int prev_skip = (m_n_segments / (m_control_skip + 1)) * m_control_skip;
+    if (m_n_segments % (m_control_skip + 1) != 0){
+        prev_skip += m_n_segments % (m_control_skip + 1);
+    }
+    n = 3 * m_ncells * (m_n_segments + 1) - prev_skip * m_ncells;
 
     // Number of constraints
     m = (2*m_ncells + 1) * (m_n_segments + 1);
@@ -195,7 +199,6 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
         x[get_f_index(0, i)] = m_init_state[3*i+2];
     }
 
-    Index acc_idx = 3*m_ncells;
     double coupling_term;
     std::list<int>::iterator it;
     std::list<int> data;
@@ -213,18 +216,14 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
                 // Next S
                 x[get_s_index(k+1, i)] = std::max(0.0,
                     x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step) - x[get_s_index(k, i)]*x[get_f_index(k, i)]*m_time_step);
-                acc_idx++;
                 // Next I
                 x[get_i_index(k+1, i)] = std::max(0.0,
                     x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step);
-                acc_idx++;
                 // Next f
                 x[get_f_index(k+1, i)] = 0.0;
-                acc_idx++;
             }
         }
 
-        assert(acc_idx == n);
     } else {
         // Initialise from previous results files
         std::string line;
