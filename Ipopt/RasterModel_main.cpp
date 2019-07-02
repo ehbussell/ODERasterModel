@@ -52,6 +52,13 @@ int main(int argc, char* argv[])
         init_state.push_back(0.0);
     }
 
+    // Read in objective weighting raster (terminal cell value)
+    Raster obj_weights_raster = readRaster("ObjWeight_raster.txt");
+    std::vector<double> obj_weights;
+    for (int i=0; i<(nrow*ncol); i++){
+        obj_weights.push_back(obj_weights_raster.m_array[i]);
+    }
+
     // Create a new instance of IpoptApplication
     //  (use a SmartPtr, not raw)
     // We are using the factory, since this allows us to compile this
@@ -95,10 +102,10 @@ int main(int argc, char* argv[])
         SmartPtr<RasterModelMidpoint_NLP> mynlp;
         if (argc == 10){
             mynlp = new RasterModelMidpoint_NLP(
-                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, control_skip, argv[9]);
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, obj_weights, control_skip, argv[9]);
         } else {
             mynlp = new RasterModelMidpoint_NLP(
-                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, control_skip);
+                beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, obj_weights, control_skip);
         }
         status = app->OptimizeTNLP(mynlp);
     }

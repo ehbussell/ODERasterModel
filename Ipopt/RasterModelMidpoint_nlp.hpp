@@ -10,10 +10,12 @@ class RasterModelMidpoint_NLP : public TNLP
 {
 public:
     /** default constructor */
-    RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, int control_skip);
+    RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+                            std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip);
     
     /** constructor with warm start point */
-    RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, int control_skip, std::string start_file_stub);
+    RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+                            std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip, std::string start_file_stub);
 
     /** default destructor */
     virtual ~RasterModelMidpoint_NLP();
@@ -23,6 +25,7 @@ public:
     std::vector<double> m_init_state;
     bool m_warm_start;
     std::string m_start_file_stub;
+    std::vector<double> m_obj_weights;
 
     int get_s_index(int time_idx, int space_idx);
     int get_i_index(int time_idx, int space_idx);

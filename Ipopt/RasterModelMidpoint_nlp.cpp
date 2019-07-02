@@ -8,25 +8,29 @@
 using namespace Ipopt;
 
 // constructor
-RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, int control_skip)
+RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+                                                 std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip)
     : m_beta(beta),
     m_control_rate(control_rate),
     m_budget(budget),
     m_final_time(final_time),
     m_nrow(nrow),
     m_ncol(ncol),
-    m_init_state(init_state),
     m_n_segments(n_segments),
+    m_init_state(init_state),
+    m_obj_weights(obj_weights),
+    m_control_skip(control_skip),
+
     m_time_step(final_time / n_segments),
     m_ncells(nrow * ncol),
     m_warm_start(false),
-    m_trunc_dist(2),
-    m_control_skip(control_skip)
+    m_trunc_dist(2)
 {}
 
 // constructor with warm start
-RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state, int control_skip, std::string start_file_stub)
-: RasterModelMidpoint_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, control_skip)
+RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+                                                 std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip, std::string start_file_stub)
+: RasterModelMidpoint_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, obj_weights, control_skip)
 {
 m_warm_start = true;
 m_start_file_stub = start_file_stub;
@@ -207,10 +211,12 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
                     coupling_term += kernel(i, *it, m_nrow, m_ncol) * x[get_i_index(k, *it)];
                 }
                 // Next S
-                x[get_s_index(k+1, i)] = std::max(0.0, x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step) - x[get_s_index(k, i)]*x[get_f_index(k, i)]*m_time_step);
+                x[get_s_index(k+1, i)] = std::max(0.0,
+                    x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step) - x[get_s_index(k, i)]*x[get_f_index(k, i)]*m_time_step);
                 acc_idx++;
                 // Next I
-                x[get_i_index(k+1, i)] = std::max(0.0, x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step);
+                x[get_i_index(k+1, i)] = std::max(0.0,
+                    x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step);
                 acc_idx++;
                 // Next f
                 x[get_f_index(k+1, i)] = 0.0;
@@ -298,7 +304,7 @@ bool RasterModelMidpoint_NLP::eval_f(Index n, const Number* x, bool new_x, Numbe
     obj_value = 0.0;
 
     for (Index i=0; i<m_ncells; i++){
-        obj_value -= x[get_s_index(m_n_segments, i)];
+        obj_value -= x[get_s_index(m_n_segments, i)] * m_obj_weights[i];
     }
 
     return true;
@@ -312,7 +318,7 @@ bool RasterModelMidpoint_NLP::eval_grad_f(Index n, const Number* x, bool new_x, 
     }
 
     for (Index i=0; i<m_ncells; i++){
-        grad_f[get_s_index(m_n_segments, i)] = -1.0;
+        grad_f[get_s_index(m_n_segments, i)] = -m_obj_weights[i];
     }
 
     return true;
