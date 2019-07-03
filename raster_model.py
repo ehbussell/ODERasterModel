@@ -81,14 +81,14 @@ class RasterModel:
 
         self.state_init = self._read_rasters(host_density_file, initial_s_file, initial_i_file)
 
-    def run_scheme(self, control_scheme, euler=False):
-        """Run ODE system forward using supplied control scheme."""
+    def run_scheme(self, thin_scheme=None, rogue_scheme=None, euler=False):
+        """Run ODE system forward using supplied control schemes."""
 
         ode = integrate.ode(self.deriv)
         ode.set_integrator('vode', nsteps=1000, method='bdf')
         ode.set_initial_value(self.state_init,
                               self.params['times'][0])
-        ode.set_f_params(control_scheme)
+        ode.set_f_params(thin_scheme, rogue_scheme)
 
         ts = [self.params['times'][0]]
         xs = [self.state_init]
@@ -96,7 +96,7 @@ class RasterModel:
         if euler:
             for time in self.params['times'][1:]:
                 time_step = time - ts[-1]
-                new_x = xs[-1] + (time_step * self.deriv(ts[-1], xs[-1], control_scheme))
+                new_x = xs[-1] + (time_step * self.deriv(ts[-1], xs[-1], thin_scheme, rogue_scheme))
                 ts.append(time)
                 xs.append(new_x)
         else:
@@ -108,21 +108,35 @@ class RasterModel:
         # Create RasterRun object to hold result
         s_dict = {'time': ts}
         i_dict = {'time': ts}
-        f_dict = {'time': ts}
+        u_dict = {'time': ts}
+        v_dict = {'time': ts}
+        results_u = None
+        results_v = None
 
         for cell in range(self.ncells):
             s_states = [x[2*cell] for i, x in enumerate(xs)]
-            i_states = [x[2*cell+1] for i, x in enumerate(xs)]
-            f_states = [control_scheme(ts[i])[cell] for i, x in enumerate(xs)]
             s_dict['Cell' + str(cell)] = s_states
+
+            i_states = [x[2*cell+1] for i, x in enumerate(xs)]
             i_dict['Cell' + str(cell)] = i_states
-            f_dict['Cell' + str(cell)] = f_states
+
+            if thin_scheme is not None:
+                u_states = [thin_scheme(ts[i])[cell] for i, x in enumerate(xs)]
+                u_dict['Cell' + str(cell)] = u_states
+
+            if rogue_scheme is not None:
+                v_states = [rogue_scheme(ts[i])[cell] for i, x in enumerate(xs)]
+                v_dict['Cell' + str(cell)] = v_states
 
         results_s = pd.DataFrame(s_dict)
         results_i = pd.DataFrame(i_dict)
-        results_f = pd.DataFrame(f_dict)
+        if thin_scheme is not None:
+            results_u = pd.DataFrame(u_dict)
 
-        return RasterRun(self.params, (results_s, results_i, results_f))
+        if rogue_scheme is not None:
+            results_v = pd.DataFrame(v_dict)
+
+        return RasterRun(self.params, (results_s, results_i, results_u, results_v))
 
     def no_control_policy(self, time, state):
         """Run policy for no control, to use with run_scheme."""
@@ -173,23 +187,34 @@ class RasterModel:
 
         results_s = pd.read_csv("output_S.csv")
         results_i = pd.read_csv("output_I.csv")
-        results_f = pd.read_csv("output_f.csv")
+        results_u = pd.read_csv("output_u.csv")
+        results_v = pd.read_csv("output_v.csv")
 
-        return RasterRun(self.params, (results_s, results_i, results_f))
+        return RasterRun(self.params, (results_s, results_i, results_u, results_v))
 
-    def deriv(self, t, X, control):
+    def deriv(self, t, X, thin_scheme, rogue_scheme):
         """Calculate state derivative"""
 
         dX = np.zeros(len(X))
         S_state = X[0::2]
         I_state = X[1::2]
-        control_val = control(t)
+
         infection_terms = (self.params['primary_rate'] * S_state +
                            self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 
-        dS = -1*infection_terms - np.array([
-            0.0 + self.params['control_rate']*control_val[i] for i in range(self.ncells)])*S_state
+        dS = -1*infection_terms
+
+        if thin_scheme is not None:
+            thin_val = thin_scheme(t)
+            dS -= np.array([
+                self.params['control_rate'] * thin_val[i] for i in range(self.ncells)]) * S_state
+
         dI = infection_terms
+
+        if rogue_scheme is not None:
+            rogue_val = rogue_scheme(t)
+            dI -= np.array([
+                self.params['control_rate'] * rogue_val[i] for i in range(self.ncells)]) * I_state
 
         dX[0::2] = dS
         dX[1::2] = dI
@@ -202,30 +227,36 @@ class RasterRun:
 
     def __init__(self, model_params, results):
         self.model_params = model_params
-        self.results_s, self.results_i, self.results_f = results
+        self.results_s, self.results_i, self.results_u, self.results_v = results
 
-    def get_plot(self, time, ax_state, ax_control=None):
+    def get_plot(self, time, ax_state, ax_thin=None, ax_rogue=None):
         """Generate plot of state and control at specified time."""
 
         # Find index in results coresponding to required time
         idx = int(self.results_s.index[self.results_s['time'] == time][0])
 
-        data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx], self.results_f.iloc[idx])
-        colours1, colours2 = self._get_colours(data_rows)
+        data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx],
+                     self.results_u.iloc[idx], self.results_v.iloc[idx])
+        colours1, colours2, colours3 = self._get_colours(data_rows)
 
         im1 = ax_state.imshow(colours1, origin="upper")
 
-        if ax_control is not None:
-            im2 = ax_control.imshow(colours2, origin="upper")
+        if ax_thin is not None:
+            im2 = ax_thin.imshow(colours2, origin="upper")
         else:
             im2 = None
+
+        if ax_rogue is not None:
+            im3 = ax_rogue.imshow(colours3, origin="upper")
+        else:
+            im3 = None
 
         # Add text showing time
         _ = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
                           transform=ax_state.transAxes, weight="bold", fontsize=12,
                           bbox=dict(facecolor='white', alpha=0.6))
 
-        return im1, im2
+        return im1, im2, im3
 
     def make_video(self, video_length=5):
         """Make animation of raster run."""
@@ -237,10 +268,12 @@ class RasterRun:
         interval = max([1, int(len(self.results_s) / nframes)])
         nframes = int(np.ceil(len(self.results_s)/interval)) + 1
 
-        # Colour mappings for control
-        cmap = plt.get_cmap("Oranges")
-        cNorm = colors.Normalize(vmin=0, vmax=1)
-        scalarMap = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap)
+        # Colour mappings for thinning
+        cmap_thin = plt.get_cmap("Greens")
+        cmap_rogue = plt.get_cmap("Oranges")
+        cNorm = colors.Normalize(vmin=0, vmax=0.1)
+        scalarMap_thin = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_thin)
+        scalarMap_rogue = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_rogue)
 
         # Join indices into a list
         indices = np.r_[0:len(self.results_s):interval, -1]
@@ -255,42 +288,81 @@ class RasterRun:
         i_values = np.array([self.results_i['Cell'+str(cell)].values[indices]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         i_values = np.reshape(i_values, size)
-        f_values = np.array([self.results_f['Cell'+str(cell)].values[indices]
-                             for cell in range(np.prod(self.model_params['dimensions']))]).T
-        f_values = np.reshape(f_values, size)
 
-        # Generate matrices for state and control colours
+        # Generate matrices for state colours
         colours = np.zeros((len(times), *self.model_params['dimensions'], 4))
         colours[:, :, :, 0] = i_values/self.model_params['max_hosts']
         colours[:, :, :, 1] = s_values/self.model_params['max_hosts']
         colours[:, :, :, 3] = np.ones(size)
 
-        colours_control = np.zeros((len(times), *self.model_params['dimensions'], 4))
-        colours_control = np.array([scalarMap.to_rgba(f_values[i]) for i in range(size[0])])
+        n_plots = 1
+        if self.results_u is not None:
+            n_plots += 1
+            u_values = np.array([self.results_u['Cell'+str(cell)].values[indices]
+                                 for cell in range(np.prod(self.model_params['dimensions']))]).T
+            u_values = np.reshape(u_values, size)
+
+            colours_thin = np.zeros((len(times), *self.model_params['dimensions'], 4))
+            colours_thin = np.array([scalarMap_thin.to_rgba(u_values[i]) for i in range(size[0])])
+
+        if self.results_v is not None:
+            n_plots += 1
+            v_values = np.array([self.results_v['Cell'+str(cell)].values[indices]
+                                 for cell in range(np.prod(self.model_params['dimensions']))]).T
+            v_values = np.reshape(v_values, size)
+
+            colours_rogue = np.zeros((len(times), *self.model_params['dimensions'], 4))
+            colours_rogue = np.array([scalarMap_rogue.to_rgba(v_values[i]) for i in range(size[0])])
 
         fig = plt.figure()
-        ax1 = fig.add_subplot(1, 2, 1)
+        ax1 = fig.add_subplot(1, n_plots, 1)
         ax1.set_xticks([])
         ax1.set_yticks([])
+        ax1.set_title("State")
 
-        ax2 = fig.add_subplot(1, 2, 2)
-        ax2.set_xticks([])
-        ax2.set_yticks([])
+        if self.results_u is not None:
+            ax2 = fig.add_subplot(1, n_plots, 2)
+            ax2.set_xticks([])
+            ax2.set_yticks([])
+            ax2.set_title("Thinning")
+
+        if self.results_v is not None:
+            ax3 = fig.add_subplot(1, n_plots, n_plots)
+            ax3.set_xticks([])
+            ax3.set_yticks([])
+            ax3.set_title("Roguing")
 
         fig.tight_layout()
 
         im1 = ax1.imshow(colours[0], animated=True, origin="upper")
-        im2 = ax2.imshow(colours_control[0], animated=True, origin="upper")
+
+        if self.results_u is not None:
+            im2 = ax2.imshow(colours_thin[0], animated=True, origin="upper")
+        else:
+            im2 = None
+        if self.results_v is not None:
+            im3 = ax3.imshow(colours_rogue[0], animated=True, origin="upper")
+        else:
+            im3 = None
         time_text = ax1.text(0.03, 0.9, 'time = %.3f' % times[0],
                              transform=ax1.transAxes, weight="bold", fontsize=12,
                              bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
             im1.set_array(colours[frame_number])
-            im2.set_array(colours_control[frame_number])
-            time_text.set_text('time = %.3f' % times[frame_number])
+            ret_list = [im1]
 
-            return im1, im2, time_text
+            if self.results_u is not None:
+                im2.set_array(colours_thin[frame_number])
+                ret_list.append(im2)
+            if self.results_u is not None:
+                im3.set_array(colours_rogue[frame_number])
+                ret_list.append(im3)
+
+            time_text.set_text('time = %.3f' % times[frame_number])
+            ret_list.append(time_text)
+
+            return ret_list
 
         im_ani = animation.FuncAnimation(fig, update, interval=video_length/nframes, frames=nframes,
                                          blit=True, repeat=False)
@@ -316,33 +388,46 @@ class RasterRun:
         """Export results to file(s)."""
         self.results_s.to_csv(filestub + "_S.csv")
         self.results_i.to_csv(filestub + "_I.csv")
-        self.results_f.to_csv(filestub + "_f.csv")
+        self.results_u.to_csv(filestub + "_u.csv")
+        self.results_v.to_csv(filestub + "_v.csv")
 
     def _get_colours(self, data_rows):
         """Calculate cell colours"""
 
-        cmap = plt.get_cmap("Oranges")
-        cnorm = colors.Normalize(vmin=0, vmax=1.0)
-        scalar_map = plt.cm.ScalarMappable(norm=cnorm, cmap=cmap)
+        cmap_thin = plt.get_cmap("Greens")
+        cmap_rogue = plt.get_cmap("Oranges")
+        cNorm = colors.Normalize(vmin=0, vmax=1.0)
+        scalarMap_thin = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_thin)
+        scalarMap_rogue = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_rogue)
 
-        ncells = np.prod(self.model_params['dimensions'])
-        colours1 = np.zeros((self.model_params['dimensions'][0],
-                             self.model_params['dimensions'][1], 4))
-        colours2 = np.zeros((self.model_params['dimensions'][0],
-                             self.model_params['dimensions'][1], 4))
+        landscape_shape = (self.model_params['dimensions'][0], self.model_params['dimensions'][1])
 
-        for i in range(ncells):
-            S = data_rows[0]['Cell' + str(i)]
-            I = data_rows[1]['Cell' + str(i)]
-            B = data_rows[2]['Cell' + str(i)]
-            col = i % self.model_params['dimensions'][1]
-            row = int(i/self.model_params['dimensions'][1])
-            colours1[row, col, :] = (I/self.model_params['max_hosts'],
-                                     S/self.model_params['max_hosts'], 0, 1)
+        s_values = np.array([data_rows[0]['Cell'+str(cell)].values
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        s_values = np.reshape(s_values, landscape_shape)
+        i_values = np.array([data_rows[1]['Cell'+str(cell)].values
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        i_values = np.reshape(i_values, landscape_shape)
+        u_values = np.array([data_rows[2]['Cell'+str(cell)].values
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        u_values = np.reshape(u_values, landscape_shape)
+        v_values = np.array([data_rows[3]['Cell'+str(cell)].values
+                             for cell in range(np.prod(self.model_params['dimensions']))]).T
+        v_values = np.reshape(v_values, landscape_shape)
 
-            colours2[row, col, :] = scalar_map.to_rgba(B)
+        # Generate matrices for state and control colours
+        colours1 = np.zeros((*self.model_params['dimensions'], 4))
+        colours1[:, :, 0] = i_values/self.model_params['max_hosts']
+        colours1[:, :, 1] = s_values/self.model_params['max_hosts']
+        colours1[:, :, 3] = np.ones(landscape_shape)
 
-        return colours1, colours2
+        colours_thin = np.zeros((*self.model_params['dimensions'], 4))
+        colours_thin = np.array(scalarMap_thin.to_rgba(u_values))
+
+        colours_rogue = np.zeros((*self.model_params['dimensions'], 4))
+        colours_rogue = np.array(scalarMap_rogue.to_rgba(v_values))
+
+        return colours1, colours_thin, colours_rogue
 
 
 class RasterOptimisation:
@@ -365,7 +450,8 @@ class RasterOptimisation:
 
         self.results_s = pd.read_csv(output_file_stub + "_S.csv")
         self.results_i = pd.read_csv(output_file_stub + "_I.csv")
-        self.results_f = pd.read_csv(output_file_stub + "_f.csv")
+        self.results_u = pd.read_csv(output_file_stub + "_u.csv")
+        self.results_v = pd.read_csv(output_file_stub + "_v.csv")
 
         model_params = {}
         model_params['inf_rate'] = setup_dict['beta']
@@ -389,7 +475,7 @@ class RasterOptimisation:
                     coupling[i, j] = np.exp(-dist/0.210619) / (2 * np.pi * 0.210619 * 0.210619)
         model_params['coupling'] = coupling
 
-        model_params['times'] = self.results_f['time']
+        model_params['times'] = self.results_u['time']
 
         self.model_params = model_params
         self.s0_raster = s0_raster.array.flatten() * n_raster.array.flatten()
@@ -400,7 +486,10 @@ class RasterOptimisation:
 
         model = RasterModel(self.model_params)
 
-        control_scheme = interp1d(self.results_f['time'], self.results_f.values[:, 1:].T,
-                                  kind="zero", fill_value="extrapolate")
+        thin_scheme = interp1d(self.results_u['time'], self.results_u.values[:, 1:].T,
+                               kind="zero", fill_value="extrapolate")
 
-        return model.run_scheme(control_scheme)
+        rogue_scheme = interp1d(self.results_v['time'], self.results_v.values[:, 1:].T,
+                                kind="zero", fill_value="extrapolate")
+
+        return model.run_scheme(thin_scheme, rogue_scheme)
