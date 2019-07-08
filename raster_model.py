@@ -229,7 +229,7 @@ class RasterRun:
         self.model_params = model_params
         self.results_s, self.results_i, self.results_u, self.results_v = results
 
-    def get_plot(self, time, ax_state, ax_thin=None, ax_rogue=None):
+    def get_plot(self, time, ax_state, ax_thin=None, ax_rogue=None, show_time=True):
         """Generate plot of state and control at specified time."""
 
         # Find index in results coresponding to required time
@@ -252,13 +252,14 @@ class RasterRun:
             im3 = None
 
         # Add text showing time
-        _ = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
-                          transform=ax_state.transAxes, weight="bold", fontsize=12,
-                          bbox=dict(facecolor='white', alpha=0.6))
+        if show_time:
+            _ = ax_state.text(0.02, 0.95, 'time = %.3f' % data_rows[0]['time'],
+                              transform=ax_state.transAxes, weight="bold", fontsize=12,
+                              bbox=dict(facecolor='white', alpha=0.6))
 
         return im1, im2, im3
 
-    def make_video(self, video_length=5):
+    def make_video(self, video_length=5, show_time=True):
         """Make animation of raster run."""
 
         # Video properties
@@ -344,9 +345,11 @@ class RasterRun:
             im3 = ax3.imshow(colours_rogue[0], animated=True, origin="upper")
         else:
             im3 = None
-        time_text = ax1.text(0.03, 0.9, 'time = %.3f' % times[0],
-                             transform=ax1.transAxes, weight="bold", fontsize=12,
-                             bbox=dict(facecolor='white', alpha=0.6))
+
+        if show_time:
+            time_text = ax1.text(0.03, 0.9, 'time = %.3f' % times[0],
+                                 transform=ax1.transAxes, weight="bold", fontsize=12,
+                                 bbox=dict(facecolor='white', alpha=0.6))
 
         def update(frame_number):
             im1.set_array(colours[frame_number])
@@ -359,8 +362,9 @@ class RasterRun:
                 im3.set_array(colours_rogue[frame_number])
                 ret_list.append(im3)
 
-            time_text.set_text('time = %.3f' % times[frame_number])
-            ret_list.append(time_text)
+            if show_time:
+                time_text.set_text('time = %.3f' % times[frame_number])
+                ret_list.append(time_text)
 
             return ret_list
 
@@ -369,10 +373,10 @@ class RasterRun:
 
         return im_ani
 
-    def plot(self, video_length=5):
+    def plot(self, video_length=5, show_time=True):
         """View animation of raster run."""
 
-        _ = self.make_video(video_length)
+        _ = self.make_video(video_length, show_time=show_time)
         plt.show()
 
     def export_video(self, filename, video_length=5):
@@ -402,16 +406,16 @@ class RasterRun:
 
         landscape_shape = (self.model_params['dimensions'][0], self.model_params['dimensions'][1])
 
-        s_values = np.array([data_rows[0]['Cell'+str(cell)].values
+        s_values = np.array([data_rows[0]['Cell'+str(cell)]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         s_values = np.reshape(s_values, landscape_shape)
-        i_values = np.array([data_rows[1]['Cell'+str(cell)].values
+        i_values = np.array([data_rows[1]['Cell'+str(cell)]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         i_values = np.reshape(i_values, landscape_shape)
-        u_values = np.array([data_rows[2]['Cell'+str(cell)].values
+        u_values = np.array([data_rows[2]['Cell'+str(cell)]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         u_values = np.reshape(u_values, landscape_shape)
-        v_values = np.array([data_rows[3]['Cell'+str(cell)].values
+        v_values = np.array([data_rows[3]['Cell'+str(cell)]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         v_values = np.reshape(v_values, landscape_shape)
 
