@@ -7,11 +7,11 @@ import numpy as np
 import pandas as pd
 from scipy import integrate
 from scipy.interpolate import interp1d
+from scipy.spatial.distance import pdist, squareform
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from matplotlib import animation
 import raster_tools
-
 
 class RasterModel:
     """Class containing a particular SIR model parametrisation, for running and optimising control.
@@ -203,13 +203,12 @@ class RasterModel:
                            self.params['inf_rate']*S_state*np.dot(self.params['coupling'], I_state))
 
         dS = -1*infection_terms
+        dI = infection_terms
 
         if thin_scheme is not None:
             thin_val = thin_scheme(t)
             dS -= np.array([
                 self.params['control_rate'] * thin_val[i] for i in range(self.ncells)]) * S_state
-
-        dI = infection_terms
 
         if rogue_scheme is not None:
             rogue_val = rogue_scheme(t)
@@ -229,15 +228,22 @@ class RasterRun:
         self.model_params = model_params
         self.results_s, self.results_i, self.results_u, self.results_v = results
 
-    def get_plot(self, time, ax_state, ax_thin=None, ax_rogue=None, show_time=True):
+    def get_plot(self, time, ax_state, ax_thin=None, ax_rogue=None, show_time=True, vmax=1.0):
         """Generate plot of state and control at specified time."""
 
         # Find index in results coresponding to required time
         idx = int(self.results_s.index[self.results_s['time'] == time][0])
 
-        data_rows = (self.results_s.iloc[idx], self.results_i.iloc[idx],
-                     self.results_u.iloc[idx], self.results_v.iloc[idx])
-        colours1, colours2, colours3 = self._get_colours(data_rows)
+        data_rows = [self.results_s.iloc[idx], self.results_i.iloc[idx]]
+        if self.results_u is not None:
+            data_rows.append(self.results_u.iloc[idx])
+        else:
+            data_rows.append(None)
+        if self.results_v is not None:
+            data_rows.append(self.results_v.iloc[idx])
+        else:
+            data_rows.append(None)
+        colours1, colours2, colours3 = self._get_colours(data_rows, vmax=vmax)
 
         im1 = ax_state.imshow(colours1, origin="upper")
 
@@ -259,7 +265,7 @@ class RasterRun:
 
         return im1, im2, im3
 
-    def make_video(self, video_length=5, show_time=True):
+    def make_video(self, video_length=5, show_time=True, vmax=1.0):
         """Make animation of raster run."""
 
         # Video properties
@@ -272,7 +278,7 @@ class RasterRun:
         # Colour mappings for thinning
         cmap_thin = plt.get_cmap("Greens")
         cmap_rogue = plt.get_cmap("Oranges")
-        cNorm = colors.Normalize(vmin=0, vmax=0.1)
+        cNorm = colors.Normalize(vmin=0, vmax=vmax)
         scalarMap_thin = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_thin)
         scalarMap_rogue = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_rogue)
 
@@ -373,10 +379,10 @@ class RasterRun:
 
         return im_ani
 
-    def plot(self, video_length=5, show_time=True):
+    def plot(self, video_length=5, show_time=True, **kwargs):
         """View animation of raster run."""
 
-        _ = self.make_video(video_length, show_time=show_time)
+        _ = self.make_video(video_length, show_time=show_time, **kwargs)
         plt.show()
 
     def export_video(self, filename, video_length=5):
@@ -395,12 +401,12 @@ class RasterRun:
         self.results_u.to_csv(filestub + "_u.csv")
         self.results_v.to_csv(filestub + "_v.csv")
 
-    def _get_colours(self, data_rows):
+    def _get_colours(self, data_rows, vmax=1.0):
         """Calculate cell colours"""
 
         cmap_thin = plt.get_cmap("Greens")
         cmap_rogue = plt.get_cmap("Oranges")
-        cNorm = colors.Normalize(vmin=0, vmax=1.0)
+        cNorm = colors.Normalize(vmin=0, vmax=vmax)
         scalarMap_thin = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_thin)
         scalarMap_rogue = plt.cm.ScalarMappable(norm=cNorm, cmap=cmap_rogue)
 
@@ -412,24 +418,40 @@ class RasterRun:
         i_values = np.array([data_rows[1]['Cell'+str(cell)]
                              for cell in range(np.prod(self.model_params['dimensions']))]).T
         i_values = np.reshape(i_values, landscape_shape)
-        u_values = np.array([data_rows[2]['Cell'+str(cell)]
-                             for cell in range(np.prod(self.model_params['dimensions']))]).T
-        u_values = np.reshape(u_values, landscape_shape)
-        v_values = np.array([data_rows[3]['Cell'+str(cell)]
-                             for cell in range(np.prod(self.model_params['dimensions']))]).T
-        v_values = np.reshape(v_values, landscape_shape)
+
+        if data_rows[2] is not None:
+            u_values = np.array([data_rows[2]['Cell'+str(cell)]
+                                for cell in range(np.prod(self.model_params['dimensions']))]).T
+            u_values = np.reshape(u_values, landscape_shape)
+        
+        if data_rows[3] is not None:
+            v_values = np.array([data_rows[3]['Cell'+str(cell)]
+                                for cell in range(np.prod(self.model_params['dimensions']))]).T
+            v_values = np.reshape(v_values, landscape_shape)
 
         # Generate matrices for state and control colours
-        colours1 = np.zeros((*self.model_params['dimensions'], 4))
-        colours1[:, :, 0] = i_values/self.model_params['max_hosts']
-        colours1[:, :, 1] = s_values/self.model_params['max_hosts']
-        colours1[:, :, 3] = np.ones(landscape_shape)
+        cmap = plt.cm.get_cmap('RdYlGn_r')
+        prop_infected = np.divide(i_values, s_values + i_values, out=np.zeros(landscape_shape),
+                                  where=(s_values + i_values > 0))
+        colours1 = cmap(prop_infected)
+        colours1[..., -1] = (s_values + i_values) / self.model_params['max_hosts']
 
-        colours_thin = np.zeros((*self.model_params['dimensions'], 4))
-        colours_thin = np.array(scalarMap_thin.to_rgba(u_values))
+        # colours1 = np.zeros((*self.model_params['dimensions'], 4))
+        # colours1[:, :, 0] = i_values/self.model_params['max_hosts']
+        # colours1[:, :, 1] = s_values/self.model_params['max_hosts']
+        # colours1[:, :, 3] = np.ones(landscape_shape)
 
-        colours_rogue = np.zeros((*self.model_params['dimensions'], 4))
-        colours_rogue = np.array(scalarMap_rogue.to_rgba(v_values))
+        if data_rows[2] is not None:
+            colours_thin = np.zeros((*self.model_params['dimensions'], 4))
+            colours_thin = np.array(scalarMap_thin.to_rgba(u_values))
+        else:
+            colours_thin = None
+
+        if data_rows[3] is not None:
+            colours_rogue = np.zeros((*self.model_params['dimensions'], 4))
+            colours_rogue = np.array(scalarMap_rogue.to_rgba(v_values))
+        else:
+            colours_rogue = None
 
         return colours1, colours_thin, colours_rogue
 
@@ -444,9 +466,14 @@ class RasterOptimisation:
 
         setup_dict = {}
         for line in setup_lines:
-            arg, val = line.split()
-            if arg != "START_FILE_STUB":
+            try:
+                arg, val = line.split()
+            except ValueError:
+                continue
+            if arg in ['BETA', 'SCALE', 'CONTROL_RATE', 'BUDGET', 'FINAL_TIME']:
                 val = float(val)
+            if arg in ['METHOD', 'N_SEGMENTS', 'MAX_HOSTS', 'CONTROL_SKIP', 'EXIT_CODE']:
+                val = int(val)
 
             setup_dict[arg.lower()] = val
 
@@ -457,6 +484,8 @@ class RasterOptimisation:
         self.results_u = pd.read_csv(output_file_stub + "_u.csv")
         self.results_v = pd.read_csv(output_file_stub + "_v.csv")
 
+        self.input_file_stub = input_file_stub
+
         model_params = {}
         model_params['inf_rate'] = setup_dict['beta']
         model_params['control_rate'] = setup_dict['control_rate']
@@ -466,18 +495,39 @@ class RasterOptimisation:
         s0_raster = raster_tools.RasterData.from_file(input_file_stub + "S0_raster.txt")
         i0_raster = raster_tools.RasterData.from_file(input_file_stub + "I0_raster.txt")
         n_raster = raster_tools.RasterData.from_file(input_file_stub + "HostDensity_raster.txt")
+        sus_raster = raster_tools.RasterData.from_file(input_file_stub + self.setup['sus_file'])
+        inf_raster = raster_tools.RasterData.from_file(input_file_stub + self.setup['inf_file'])
 
-        dimensions = (11, 9)
+        susceptibility = np.clip(sus_raster.array.flatten(), 0, None)
+        infectiousness = np.clip(inf_raster.array.flatten(), 0, None)
+
+        dimensions = (s0_raster.header_vals['nrows'], s0_raster.header_vals['ncols'])
         ncells = np.prod(dimensions)
-        coupling = np.zeros((ncells, ncells))
-        for i in range(ncells):
-            for j in range(ncells):
-                dx = abs((i % dimensions[0]) - (j % dimensions[0]))
-                dy = abs(int(i/dimensions[0]) - int(j/dimensions[0]))
-                dist = np.sqrt(dx*dx + dy*dy)
-                if (dx <= 2) and (dy <= 2):
-                    coupling[i, j] = np.exp(-dist/0.210619) / (2 * np.pi * 0.210619 * 0.210619)
-        model_params['coupling'] = coupling
+        x = np.arange(ncells) % dimensions[1]
+        y = np.array(np.arange(ncells) / dimensions[1], dtype=int)
+        locs = np.array(list(zip(x, y)))
+        dist_condensed = pdist(locs)
+        distances = squareform(dist_condensed)
+
+        def kernel(dist):
+            return 2 / (self.setup['scale'] * np.pi * (1 + np.power(dist / self.setup['scale'], 2)))
+
+        coupling = kernel(distances)
+        model_params['coupling'] = coupling * infectiousness * susceptibility[:, np.newaxis]
+
+
+        # dimensions = s0_raster.header_vals[]
+        # ncells = np.prod(dimensions)
+        # coupling = np.zeros((ncells, ncells))
+        # for i in range(ncells):
+        #     for j in range(ncells):
+        #         dx = abs((i % dimensions[0]) - (j % dimensions[0]))
+        #         dy = abs(int(i/dimensions[0]) - int(j/dimensions[0]))
+        #         dist = np.sqrt(dx*dx + dy*dy)
+        #         # if (dx <= 2) and (dy <= 2):
+        #         #     coupling[i, j] = np.exp(-dist/0.42742698639573123) / (2 * np.pi * 0.42742698639573123 * 0.42742698639573123)
+        #         coupling[i, j] = 2 / (self.setup['scale'] * np.pi * (1 + np.power(dist / self.setup['scale'], 2)))
+        # model_params['coupling'] = coupling * infectiousness * susceptibility[:, np.newaxis]
 
         model_params['times'] = self.results_u['time']
 
@@ -488,7 +538,10 @@ class RasterOptimisation:
     def run_model(self):
         """Run raster ODE model, using this optimised control."""
 
-        model = RasterModel(self.model_params)
+        model = RasterModel(
+            self.model_params, host_density_file=self.input_file_stub + "HostDensity_raster.txt",
+            initial_s_file=self.input_file_stub + "S0_raster.txt",
+            initial_i_file=self.input_file_stub + "I0_raster.txt")
 
         thin_scheme = interp1d(self.results_u['time'], self.results_u.values[:, 1:].T,
                                kind="zero", fill_value="extrapolate")

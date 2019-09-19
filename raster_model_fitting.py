@@ -1,78 +1,16 @@
 """Tools to calculate likelihood and fits of raster model parameters, given simulation data."""
 
+from IPython import embed
+import logging
 import copy
-import pdb
+import os
+import h5py
 import numpy as np
-import pymc3 as pm
-import theano
 from scipy.optimize import minimize
+from scipy.spatial.distance import pdist, squareform
 from IndividualSimulator.utilities import output_data
 import raster_tools
-from RasterModel import raster_model
-
-def fit_raster_MCMC(kernel_generator, kernel_params, data_stub=None, nsims=None, mcmc_params=None,
-                    likelihood_func=None, target_raster=None):
-    """Run MCMC to find parameter distributions for raster model.
-
-    Required arguments:
-        kernel_generator:   Function that generates kernel function for given kernel parameters.
-        kernel_params:      Values of kernel parameters to use. List where each element corresponds
-                            to a single kernel parameter, each entry is (name, value). Each value
-                            can be a fixed number, or a tuple specifying bounds on that parameter
-                            for a uniform prior.
-
-    Optional arguments:
-        data_stub:          Simulation data stub to use.
-        nsims:              Number of simulations from data to use.  If set to None (default) then
-                            all runs in the simulation output will be used.
-        mcmc_params:        Dictionary of tuning parameters to use for MCMC run.  Contains:
-                                iters:  Number of iterations in MCMC routine (default 1000).
-        likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
-                            then this is generated.
-        target_raster:      Raster header dictionary for target raster description of simulation
-                            output.
-    """
-
-    # TODO adjust to use full/partial precomputation depending on number of cells
-
-    if likelihood_func is None:
-        print("Precomputing likelihood function")
-        likelihood_func = precompute_loglik(data_stub, nsims, target_raster, end_time=None,
-                                            ignore_outside_raster=True, precompute_level="full")
-
-    if mcmc_params is None:
-        mcmc_params = {'iters':1000}
-
-    basic_model = pm.Model()
-
-    with basic_model:
-        param_dists = []
-
-        for name, val in kernel_params:
-            if isinstance(val, tuple) and len(val) == 2:
-                param_dists.append(pm.Uniform(name, lower=val[0], upper=val[1]))
-            elif isinstance(val, (int, float)):
-                param_dists.append(val)
-            else:
-                raise ValueError("Invalid kernel parameter options!")
-
-        kernel_vals = kernel_generator(*param_dists)(likelihood_func.distances)
-        params = theano.tensor.concatenate([[1.0], kernel_vals])
-
-        if likelihood_func.precompute_level == "full":
-            log_likelihood = likelihood_func.get_function(params)
-        elif likelihood_func.precompute_level == "partial":
-            log_likelihood = likelihood_func.get_function(
-                params, kernel_generator(*param_dists)(likelihood_func.rel_pos_array[:, :]))
-
-        y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
-
-        start = pm.find_MAP()
-        print(start)
-        # trace = pm.sample(mcmc_params['iters'], progressbar=True, step=pm.Metropolis(), start=start)
-        trace = pm.sample(mcmc_params['iters'], progressbar=True, start=start)
-
-    return trace
+from Scripts import MainOptions
 
 
 def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=None, nsims=None,
@@ -115,34 +53,35 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
         print("Completed")
 
     if use_theano:
+        raise NotImplementedError
 
-        basic_model = pm.Model()
+        # basic_model = pm.Model()
 
-        with basic_model:
-            param_dists = []
+        # with basic_model:
+        #     param_dists = []
 
-            for name, val in kernel_params.items():
-                if isinstance(val, tuple) and len(val) == 2:
-                    param_dists.append(pm.Uniform(name, lower=val[0], upper=val[1]))
-                elif isinstance(val, (int, float)):
-                    param_dists.append(val)
-                else:
-                    raise ValueError("Invalid kernel parameter options!")
+        #     for name, val in kernel_params.items():
+        #         if isinstance(val, tuple) and len(val) == 2:
+        #             param_dists.append(pm.Uniform(name, lower=val[0], upper=val[1]))
+        #         elif isinstance(val, (int, float)):
+        #             param_dists.append(val)
+        #         else:
+        #             raise ValueError("Invalid kernel parameter options!")
 
-            kernel_vals = kernel_generator(*param_dists)(likelihood_func.distances)
-            params = theano.tensor.concatenate([[1.0], kernel_vals])
+        #     kernel_vals = kernel_generator(*param_dists)(likelihood_func.distances)
+        #     params = theano.tensor.concatenate([[1.0], kernel_vals])
 
-            if likelihood_func.precompute_level == "full":
-                log_likelihood = likelihood_func.get_function(params)
-            elif likelihood_func.precompute_level == "partial":
-                log_likelihood = likelihood_func.get_function(
-                    params, kernel_generator(*param_dists)(likelihood_func.rel_pos_array[:, :]))
+        #     if likelihood_func.precompute_level == "full":
+        #         log_likelihood = likelihood_func.get_function(params)
+        #     elif likelihood_func.precompute_level == "partial":
+        #         log_likelihood = likelihood_func.get_function(
+        #             params, kernel_generator(*param_dists)(likelihood_func.rel_pos_array[:, :]))
 
-            y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
+        #     y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
 
-            start = pm.find_MAP(return_raw=raw_output)
+        #     start = pm.find_MAP(return_raw=raw_output)
 
-        return start
+        # return start
 
     else:
 
@@ -189,8 +128,9 @@ def fit_raster_MLE(kernel_generator, kernel_params, param_start=None, data_stub=
         else:
             return opt_params
 
-def fit_raster_SSE(model, kernel_generator, kernel_params, data_stub, param_start=None, nsims=None,
-                   target_raster=None, dimensions=None, raw_output=False, primary_rate=False):
+def fit_raster_SSE(model, kernel_generator, kernel_params, data_path, target_header, n_sims,
+                   param_start=None, raw_output=False, primary_rate=False, sus_file=None,
+                   inf_file=None):
     """Minimise summed square errors from simulations to find best fitting parameters.
 
     Required arguments:
@@ -199,16 +139,20 @@ def fit_raster_SSE(model, kernel_generator, kernel_params, data_stub, param_star
                             to a single kernel parameter, each entry is name: value. Each value
                             can be a fixed number, or a tuple specifying bounds on that parameter
                             for a uniform prior.
-        data_stub:          Simulation data stub to use.
+        data_path:          Path to hdf5 file containing simulation DPCs for this landscape.
+                            Cells should match target raster!
+        target_header:      Raster header dictionary for target raster description of simulation
+                            output.
+        n_sims:             Number of simulations to use.
         param_start:        Parameter dictionary giving start points for optimisation. If None then
                             starts from centre of prior.
-        nsims:              Number of simulations from data to use. If set to None (default) then
-                            all runs in the simulation output will be used.
-        target_raster:      Raster header dictionary for target raster description of simulation
-                            output.
         primary_rate:       If True then expect PrimaryRate parameter in options. Will then fit
                             primary infection rate.
+        sus_file:           ASCII raster file for cell susceptibility.
+        inf_file:           ASCII raster file for cell infectiousness.
     """
+
+    logging.info("Starting SSE fit.")
 
     param_names = sorted(kernel_params)
     if primary_rate:
@@ -223,46 +167,52 @@ def fit_raster_SSE(model, kernel_generator, kernel_params, data_stub, param_star
 
     times = model.params['times']
 
-    # Extract simulation data at correct resolution
-    base_data = output_data.create_cell_data(
-        data_stub, target_header=target_raster, ignore_outside_raster=True)
-    if nsims is None:
-        nsims = len(base_data)
-    if dimensions is None:
-        dimensions = (target_raster["ncols"], target_raster['nrows'])
+    dimensions = (target_header["nrows"], target_header['ncols'])
 
     ncells = np.product(dimensions)
-    sim_data = np.ndarray((nsims, ncells, len(times)))
 
-    # Extract state at test times for each cell
-    for i, dataset in enumerate(base_data):
-        for cell in range(ncells):
-            current_i = None
-            idx = 0
-            for t, _, i_state, *_ in dataset[cell]:
-                while t > times[idx]:
-                    sim_data[i, cell, idx] = current_i
-                    idx += 1
-                    if idx > len(times):
-                        break
-                current_i = i_state
-            while idx != len(times):
-                sim_data[i, cell, idx] = current_i
-                idx += 1
+    # Extract simulation summary data
+    with h5py.File(data_path, 'r') as hf:
+        if n_sims is None:
+            sim_data = hf['sim_summary_I'][:]
+        else:
+            sim_data = hf['sim_summary_I'][:n_sims]
+    logging.info("Extracted simulation data")
 
     # Setup raster model
-    distances = np.zeros((ncells, ncells))
-    for i in range(ncells):
-        for j in range(ncells):
-            dx = abs((i % dimensions[1]) - (j % dimensions[1]))
-            dy = abs(int(i/dimensions[1]) - int(j/dimensions[1]))
-            distances[i, j] = np.sqrt(dx*dx + dy*dy)
+    x = np.arange(ncells) % dimensions[1]
+    y = np.array(np.arange(ncells) / dimensions[1], dtype=int)
+    locs = np.array(list(zip(x, y)))
+
+    dist_condensed = pdist(locs)
+    distances = squareform(dist_condensed)
+
+    # Set up susceptibility and infectiousness
+    if sus_file is None:
+        susceptibility = np.ones(ncells)
+    else:
+        sus_raster = raster_tools.RasterData.from_file(sus_file)
+        susceptibility = np.clip(sus_raster.array, 0, None).flatten()
+    if inf_file is None:
+        infectiousness = np.ones(ncells)
+    else:
+        inf_raster = raster_tools.RasterData.from_file(inf_file)
+        infectiousness = np.clip(inf_raster.array, 0, None).flatten()
+
+    logging.info("Completed setup")
 
     # Define objective function that sets cell coupling and calculates sum of squared errors
     def objective(params):
+        logging.info("%s", params)
         # First reverse logit transform parameters
-        _params_transformed = np.array(
-            [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, params)])
+        _params_transformed = np.zeros(len(params))
+        for i, ((a, b), x) in enumerate(zip(bounds, params)):
+            if x > 1e2:
+                _params_transformed[i] = b
+            elif x < -1e2:
+                _params_transformed[i] = a
+            else:
+                _params_transformed[i] = a + ((b-a)*np.exp(x) / (1 + np.exp(x)))
         if primary_rate:
             kernel = kernel_generator(*_params_transformed[:-1])
             primary_value = _params_transformed[-1]
@@ -271,23 +221,25 @@ def fit_raster_SSE(model, kernel_generator, kernel_params, data_stub, param_star
             primary_value = 0
 
         new_coupling = kernel(distances)
-        model.params['coupling'] = new_coupling
+        # Multiply columns by infectiousness, and rows by susceptibility
+        model.params['coupling'] = new_coupling * infectiousness * susceptibility[:, np.newaxis]
         model.params['primary_rate'] = primary_value
 
-        no_control_tmp = model.run_scheme(model.no_control_policy)
+        no_control_tmp = model.run_scheme()
         no_control_results = np.zeros((ncells, len(times)))
         for cell in range(ncells):
             i_vals = no_control_tmp.results_i["Cell" + str(cell)].values
             no_control_results[cell, :] = i_vals
 
         sse = 0
-        for i, dataset in enumerate(sim_data):
+        for dataset in sim_data:
             sse += np.sum(np.square(no_control_results - dataset))
 
+        logging.info("For parameters %s, SSE: %f", _params_transformed, sse)
         return sse
 
-    # Minimse SSE
-    param_fit = minimize(objective, x0, method="L-BFGS-B", options={'ftol': 1e-12})
+    # Minimise SSE
+    param_fit = minimize(objective, x0, method="Nelder-Mead", options={'fatol': 0.1})
     x1 = param_fit.x
     x2 = np.array(
         [a + ((b-a)*np.exp(x) / (1 + np.exp(x))) for (a, b), x in zip(bounds, x1)])
@@ -694,41 +646,41 @@ class LikelihoodFunction:
         else:
             raise ValueError("Unrecognised precomputation level!")
 
-    def get_function(self, params, full_kernel=None):
-        """Get log likelihood function for use with pymc3."""
+    # def get_function(self, params, full_kernel=None):
+    #     """Get log likelihood function for use with pymc3."""
 
-        if self.precompute_level == "full":
-            log_lik = theano.tensor.sum(theano.tensor.dot(
-                self.const_factors, params)) + theano.tensor.sum(theano.tensor.log(
-                    theano.tensor.dot(self.matrix, params)))
+    #     if self.precompute_level == "full":
+    #         log_lik = theano.tensor.sum(theano.tensor.dot(
+    #             self.const_factors, params)) + theano.tensor.sum(theano.tensor.log(
+    #                 theano.tensor.dot(self.matrix, params)))
 
-            def log_likelihood(required_argument):
-                return log_lik
+    #         def log_likelihood(required_argument):
+    #             return log_lik
 
-            return log_likelihood
+    #         return log_likelihood
 
-        elif self.precompute_level == "partial":
-            # TODO Handle multiple runs
-            if len(self.all_inf_cell_ids) != 1:
-                raise NotImplementedError("Partial precompute cannot handle multiple runs!")
+    #     elif self.precompute_level == "partial":
+    #         # TODO Handle multiple runs
+    #         if len(self.all_inf_cell_ids) != 1:
+    #             raise NotImplementedError("Partial precompute cannot handle multiple runs!")
 
-            log_lik = theano.tensor.sum(theano.tensor.dot(self.const_factors, params))
+    #         log_lik = theano.tensor.sum(theano.tensor.dot(self.const_factors, params))
 
-            # Scan over events
-            ([inf_state, lik_terms], updates) = theano.scan(
-                fn=self._inf_cell, sequences=self.all_inf_cell_ids[0],
-                outputs_info=[dict(initial=copy.copy(self.initial_inf), taps=[-1]), None],
-                non_sequences=[full_kernel], strict=True)
-            # Combine results
-            log_lik += theano.tensor.sum(theano.tensor.log(lik_terms))
+    #         # Scan over events
+    #         ([inf_state, lik_terms], updates) = theano.scan(
+    #             fn=self._inf_cell, sequences=self.all_inf_cell_ids[0],
+    #             outputs_info=[dict(initial=copy.copy(self.initial_inf), taps=[-1]), None],
+    #             non_sequences=[full_kernel], strict=True)
+    #         # Combine results
+    #         log_lik += theano.tensor.sum(theano.tensor.log(lik_terms))
 
-            def log_likelihood(required_argument):
-                return log_lik
+    #         def log_likelihood(required_argument):
+    #             return log_lik
 
-            return log_likelihood
+    #         return log_likelihood
 
-        else:
-            raise ValueError("Unrecognised precomputation level!")
+    #     else:
+    #         raise ValueError("Unrecognised precomputation level!")
 
     def save(self, savefile, identifier=None):
         """Save likelihood precalculation to .npz file."""
@@ -749,10 +701,74 @@ class LikelihoodFunction:
             raise ValueError("Unrecognised precomputation level!")
 
 
-    def _inf_cell(self, inf_id, inf_state_m1, full_kernel):
+    # def _inf_cell(self, inf_id, inf_state_m1, full_kernel):
 
-        lik_term = theano.tensor.sum(theano.tensor.dot(inf_state_m1, full_kernel[:, inf_id]))
+    #     lik_term = theano.tensor.sum(theano.tensor.dot(inf_state_m1, full_kernel[:, inf_id]))
 
-        new_inf_state = theano.tensor.set_subtensor(inf_state_m1[inf_id], inf_state_m1[inf_id]+1)
+    #     new_inf_state = theano.tensor.set_subtensor(inf_state_m1[inf_id], inf_state_m1[inf_id]+1)
 
-        return [new_inf_state, lik_term]
+    #     return [new_inf_state, lik_term]
+
+# def fit_raster_MCMC(kernel_generator, kernel_params, data_stub=None, nsims=None, mcmc_params=None,
+#                     likelihood_func=None, target_raster=None):
+#     """Run MCMC to find parameter distributions for raster model.
+
+#     Required arguments:
+#         kernel_generator:   Function that generates kernel function for given kernel parameters.
+#         kernel_params:      Values of kernel parameters to use. List where each element corresponds
+#                             to a single kernel parameter, each entry is (name, value). Each value
+#                             can be a fixed number, or a tuple specifying bounds on that parameter
+#                             for a uniform prior.
+
+#     Optional arguments:
+#         data_stub:          Simulation data stub to use.
+#         nsims:              Number of simulations from data to use.  If set to None (default) then
+#                             all runs in the simulation output will be used.
+#         mcmc_params:        Dictionary of tuning parameters to use for MCMC run.  Contains:
+#                                 iters:  Number of iterations in MCMC routine (default 1000).
+#         likelihood_func:    Precomputed log likelihood function (LikelihoodFunction class). If None,
+#                             then this is generated.
+#         target_raster:      Raster header dictionary for target raster description of simulation
+#                             output.
+#     """
+
+#     # TODO adjust to use full/partial precomputation depending on number of cells
+
+#     if likelihood_func is None:
+#         print("Precomputing likelihood function")
+#         likelihood_func = precompute_loglik(data_stub, nsims, target_raster, end_time=None,
+#                                             ignore_outside_raster=True, precompute_level="full")
+
+#     if mcmc_params is None:
+#         mcmc_params = {'iters':1000}
+
+#     basic_model = pm.Model()
+
+#     with basic_model:
+#         param_dists = []
+
+#         for name, val in kernel_params:
+#             if isinstance(val, tuple) and len(val) == 2:
+#                 param_dists.append(pm.Uniform(name, lower=val[0], upper=val[1]))
+#             elif isinstance(val, (int, float)):
+#                 param_dists.append(val)
+#             else:
+#                 raise ValueError("Invalid kernel parameter options!")
+
+#         kernel_vals = kernel_generator(*param_dists)(likelihood_func.distances)
+#         params = theano.tensor.concatenate([[1.0], kernel_vals])
+
+#         if likelihood_func.precompute_level == "full":
+#             log_likelihood = likelihood_func.get_function(params)
+#         elif likelihood_func.precompute_level == "partial":
+#             log_likelihood = likelihood_func.get_function(
+#                 params, kernel_generator(*param_dists)(likelihood_func.rel_pos_array[:, :]))
+
+#         y_obs = pm.DensityDist('likelihood', log_likelihood, observed=-9999)
+
+#         start = pm.find_MAP()
+#         print(start)
+#         # trace = pm.sample(mcmc_params['iters'], progressbar=True, step=pm.Metropolis(), start=start)
+#         trace = pm.sample(mcmc_params['iters'], progressbar=True, start=start)
+
+#     return trace

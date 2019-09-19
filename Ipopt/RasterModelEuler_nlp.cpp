@@ -7,6 +7,8 @@
 
 using namespace Ipopt;
 
+double scale=1.0;
+
 // constructor
 RasterModelEuler_NLP::RasterModelEuler_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments, std::vector<double> &init_state)
     : m_beta(beta),
@@ -198,13 +200,13 @@ bool RasterModelEuler_NLP::get_starting_point(Index n, bool init_x, Number* x,
                 coupling_term = 0.0;
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    coupling_term += kernel(i, *it, m_nrow, m_ncol) * x[get_i_index(k, *it)];
+                    coupling_term += kernel(i, *it, m_nrow, m_ncol, scale) * x[get_i_index(k, *it)];
                 }
                 // Next S
-                x[get_s_index(k+1, i)] = x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step);
+                x[get_s_index(k+1, i)] = std::max(0.0, x[get_s_index(k, i)] * (1.0 - m_beta * coupling_term * m_time_step));
                 acc_idx++;
                 // Next I
-                x[get_i_index(k+1, i)] = x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step;
+                x[get_i_index(k+1, i)] = std::max(0.0, x[get_i_index(k, i)] + x[get_s_index(k, i)] * m_beta * coupling_term * m_time_step);
                 acc_idx++;
                 // Next f
                 x[get_f_index(k+1, i)] = 0.0;
@@ -328,7 +330,7 @@ bool RasterModelEuler_NLP::eval_g(Index n, const Number* x, bool new_x, Index m,
             coupling_term = 0.0;
             data = get_connected(i);
             for (it = data.begin(); it != data.end(); ++it){
-                coupling_term += kernel(i, *it, m_nrow, m_ncol) * x[get_i_index(k, *it)];
+                coupling_term += kernel(i, *it, m_nrow, m_ncol, scale) * x[get_i_index(k, *it)];
             }
 
             // S constraint
@@ -493,7 +495,7 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 coupling_term = 0.0;
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    coupling_term += kernel(i, *it, m_nrow, m_ncol) * x[get_i_index(k, *it)];
+                    coupling_term += kernel(i, *it, m_nrow, m_ncol, scale) * x[get_i_index(k, *it)];
                 }
 
                 // S continuity constraints
@@ -503,7 +505,7 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 count++;
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = m_beta * x[get_s_index(k, i)] * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
+                    values[count] = m_beta * x[get_s_index(k, i)] * kernel(i, *it, m_nrow, m_ncol, scale) * m_time_step;
                     count++;
                 }
       
@@ -512,7 +514,7 @@ bool RasterModelEuler_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 count++;
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = -m_beta * x[get_s_index(k, i)] * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
+                    values[count] = -m_beta * x[get_s_index(k, i)] * kernel(i, *it, m_nrow, m_ncol, scale) * m_time_step;
                     if (i == *it){
                         values[count] += x[get_f_index(k, i)] * m_control_rate * m_time_step - 1.0;
                         // values[count] -= 1.0;
@@ -641,7 +643,7 @@ bool RasterModelEuler_NLP::eval_h(Index n, const Number* x, bool new_x,
                 // S continuity constraints
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = lambda[constraint_count] * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
+                    values[count] = lambda[constraint_count] * m_beta * kernel(i, *it, m_nrow, m_ncol, scale) * m_time_step;
                     count++;
                 }
                 constraint_count++;
@@ -649,7 +651,7 @@ bool RasterModelEuler_NLP::eval_h(Index n, const Number* x, bool new_x,
                 // I continuity constraints
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = -lambda[constraint_count] * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
+                    values[count] = -lambda[constraint_count] * m_beta * kernel(i, *it, m_nrow, m_ncol, scale) * m_time_step;
                     count++;
                 }
                 values[count] = lambda[constraint_count] * m_control_rate * m_time_step;

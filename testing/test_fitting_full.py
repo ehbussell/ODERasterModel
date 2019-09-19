@@ -5,8 +5,8 @@ import warnings
 import numpy as np
 import raster_tools
 import IndividualSimulator
-import raster_model_fitting as rmf
-import raster_model
+from RasterModel import raster_model_fitting as rmf
+from RasterModel import raster_model
 
 class NonSpatialTests(unittest.TestCase):
     """Test fitting of raster model in non-spatial context."""

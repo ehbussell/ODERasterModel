@@ -1,5 +1,6 @@
 #include "RasterModelMidpoint_NLP.hpp"
 #include "Kernel.hpp"
+#include "Config.hpp"
 #include <cassert>
 #include <iostream>
 #include <fstream>
@@ -8,33 +9,42 @@
 using namespace Ipopt;
 
 // constructor
-RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
-                                                 std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip)
-    : m_beta(beta),
-    m_control_rate(control_rate),
-    m_budget(budget),
-    m_final_time(final_time),
+RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(Config config, int nrow, int ncol, std::vector<double> &init_state,
+                                                 std::vector<double> &obj_weights, std::vector<double> &susceptibility,
+                                                 std::vector<double> &infectiousness)
+    : m_beta(config.beta),
+    m_control_rate(config.control_rate),
+    m_budget(config.budget),
+    m_final_time(config.final_time),
     m_nrow(nrow),
     m_ncol(ncol),
-    m_n_segments(n_segments),
+    m_n_segments(config.n_segments),
     m_init_state(init_state),
     m_obj_weights(obj_weights),
-    m_control_skip(control_skip),
+    m_control_skip(config.control_skip),
+    m_susceptibility(susceptibility),
+    m_infectiousness(infectiousness),
+    m_scale(config.scale),
+    m_non_spatial(config.non_spatial),
+    m_control_start(config.control_start),
 
-    m_time_step(final_time / n_segments),
+    m_time_step(config.final_time / config.n_segments),
     m_ncells(nrow * ncol),
     m_warm_start(false),
-    m_trunc_dist(2)
-{}
+    m_trunc_dist(12)
+{
+
+}
 
 // constructor with warm start
-RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
-                                                 std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip, std::string start_file_stub)
-: RasterModelMidpoint_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, obj_weights, control_skip)
-{
-m_warm_start = true;
-m_start_file_stub = start_file_stub;
-}
+// RasterModelMidpoint_NLP::RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+//                                                  std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip,
+//                                                  std::vector<double> &susceptibility, std::vector<double> &infectiousness, std::string start_file_stub)
+// : RasterModelMidpoint_NLP(beta, control_rate, budget, final_time, nrow, ncol, n_segments, init_state, obj_weights, control_skip, infectiousness, susceptibility)
+// {
+// m_warm_start = true;
+// m_start_file_stub = start_file_stub;
+// }
 
 //destructor
 RasterModelMidpoint_NLP::~RasterModelMidpoint_NLP()
@@ -43,43 +53,75 @@ RasterModelMidpoint_NLP::~RasterModelMidpoint_NLP()
 // Evaluate correct state indices
 int RasterModelMidpoint_NLP::get_s_index(int time_idx, int space_idx)
 {
-    int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
-    if (time_idx % (m_control_skip + 1) == 0){
-        // std::cout << "t: " << time_idx << " x: " << space_idx << " S: " << 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
-        return 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+    if (m_non_spatial==0){
+        int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
+        if (time_idx % (m_control_skip + 1) == 0){
+            return 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+        } else {
+            prev_skip += (time_idx - 1) % (m_control_skip + 1);
+            return 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+        }
     } else {
-        prev_skip += (time_idx - 1) % (m_control_skip + 1);
-        // std::cout << "t: " << time_idx << " x: " << space_idx << " S: " << 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
-        return 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+        int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
+        if (time_idx % (m_control_skip + 1) == 0){
+            // std::cout << "S " << time_idx << " " << space_idx << " " << 2 + 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2) << std::endl;
+            return 2 + 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2);
+        } else {
+            prev_skip += (time_idx - 1) % (m_control_skip + 1);
+            // std::cout << "S " << time_idx << " " << space_idx << " " << 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2) << std::endl;
+            return 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2);
+        }
     }
 
 }
 
 int RasterModelMidpoint_NLP::get_i_index(int time_idx, int space_idx)
 {
-    int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
-    if (time_idx % (m_control_skip + 1) == 0){
-        // std::cout << "I: " << 1 + 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
-        return 1 + 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+    if (m_non_spatial==0){
+        int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
+        if (time_idx % (m_control_skip + 1) == 0){
+            // std::cout << "I: " << 1 + 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
+            return 1 + 4*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+        } else {
+            prev_skip += (time_idx - 1) % (m_control_skip + 1);
+            // std::cout << "I: " << 1 + 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
+            return 1 + 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+        }
     } else {
-        prev_skip += (time_idx - 1) % (m_control_skip + 1);
-        // std::cout << "I: " << 1 + 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
-        return 1 + 2*space_idx + time_idx*(4 * m_ncells) - (prev_skip*2*m_ncells);
+        int prev_skip = (time_idx / (m_control_skip + 1)) * m_control_skip;
+        if (time_idx % (m_control_skip + 1) == 0){
+            // std::cout << "I " << time_idx << " " << space_idx << " " << 3 + 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2) << std::endl;
+            return 3 + 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2);
+        } else {
+            prev_skip += (time_idx - 1) % (m_control_skip + 1);
+            // std::cout << "I " << time_idx << " " << space_idx << " " << 1 + 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2) << std::endl;
+            return 1 + 2*space_idx + time_idx*(2 * m_ncells + 2) - (prev_skip*2);
+        }
     }
 }
 
 int RasterModelMidpoint_NLP::get_u_index(int time_idx, int space_idx)
 {
-    int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
-    // std::cout << "U: " << 2 + 4*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
-    return 2 + 4*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(4 * m_ncells) - (prev_skip*2*m_ncells);
+    if (m_non_spatial==0){
+        int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
+        return 2 + 4*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(4 * m_ncells) - (prev_skip*2*m_ncells);
+    } else {
+        int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
+        // std::cout << "U " << time_idx << " " << space_idx << " " << (time_idx - (time_idx % (m_control_skip+1)))*(2 * m_ncells + 2) - (prev_skip*2) << std::endl;
+        return (time_idx - (time_idx % (m_control_skip+1)))*(2 * m_ncells + 2) - (prev_skip*2);
+    }
 }
 
 int RasterModelMidpoint_NLP::get_v_index(int time_idx, int space_idx)
 {
-    int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
-    // std::cout << "V: " << 3 + 4*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(4 * m_ncells) - (prev_skip*2*m_ncells) << std::endl;
-    return 3 + 4*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(4 * m_ncells) - (prev_skip*2*m_ncells);
+    if (m_non_spatial==0){
+        int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
+        return 3 + 4*space_idx + (time_idx - (time_idx % (m_control_skip+1)))*(4 * m_ncells) - (prev_skip*2*m_ncells);
+    } else {
+        int prev_skip = ((time_idx - (time_idx % (m_control_skip+1))) / (m_control_skip + 1)) * m_control_skip;
+        // std::cout << "V " << time_idx << " " << space_idx << " " << 1 + (time_idx - (time_idx % (m_control_skip+1)))*(2 * m_ncells + 2) - (prev_skip*2) << std::endl;
+        return 1 + (time_idx - (time_idx % (m_control_skip+1)))*(2 * m_ncells + 2) - (prev_skip*2);
+    }
 }
 
 std::list<int> RasterModelMidpoint_NLP::get_connected(int space_idx)
@@ -120,15 +162,17 @@ std::list<int> RasterModelMidpoint_NLP::get_connected(int space_idx)
 bool RasterModelMidpoint_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
                              Index& nnz_h_lag, IndexStyleEnum& index_style)
 {
-    // std::cout << "Starting get_nlp_info" << std::endl;
-
     // Number of optimised variables
     int prev_skip = (m_n_segments / (m_control_skip + 1)) * m_control_skip;
     if (m_n_segments % (m_control_skip + 1) != 0){
         prev_skip += m_n_segments % (m_control_skip + 1);
     }
     m_n_control_points = (m_n_segments + 1) - prev_skip;
-    n = 4 * m_ncells * (m_n_segments + 1) - prev_skip * 2 * m_ncells;
+    if (m_non_spatial==0){
+        n = 4 * m_ncells * (m_n_segments + 1) - prev_skip * 2 * m_ncells;
+    } else {
+        n = (2 * m_ncells + 2) * (m_n_segments + 1) - prev_skip * 2;
+    }
 
     std::cout << "n: " << n << std::endl;
 
@@ -136,12 +180,9 @@ bool RasterModelMidpoint_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
     m = (2*m_ncells + 1) * (m_n_segments + 1) - prev_skip;
 
     // Number of non-zeros in Jacobian
-    // TODO this
-    // nnz_jac_g = 2 * m_ncells * (4 * m_n_segments + 2) - m_ncells * (m_n_segments + 1);
     nnz_jac_g = m_ncells * m_n_segments * 8 + m_n_control_points * m_ncells * 2 + m_ncells * 2;
 
     // Number of non-zeros in Hessian - symmetric so only require lower left corner
-    // TODO this
     nnz_h_lag = 8 * m_ncells * m_n_segments;
 
     std::list<int> data;
@@ -153,8 +194,6 @@ bool RasterModelMidpoint_NLP::get_nlp_info(Index& n, Index& m, Index& nnz_jac_g,
 
     // use the C style indexing (0-based)
     index_style = TNLP::C_STYLE;
-
-    // std::cout << "Finished get_nlp_info" << std::endl;
 
     return true;
 }
@@ -174,8 +213,13 @@ bool RasterModelMidpoint_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
         for (Index i=0; i<m_ncells; i++) {
             x_u[get_s_index(k, i)] = 2e19;
             x_u[get_i_index(k, i)] = 2e19;
-            x_u[get_u_index(k, i)] = 1.0;
-            x_u[get_v_index(k, i)] = 1.0;
+            if (k <= m_control_start){
+                x_u[get_u_index(k, i)] = 0.0;
+                x_u[get_v_index(k, i)] = 0.0;
+            } else {
+                x_u[get_u_index(k, i)] = 1.0;
+                x_u[get_v_index(k, i)] = 1.0;
+            }
         }
     }
 
@@ -192,8 +236,8 @@ bool RasterModelMidpoint_NLP::get_bounds_info(Index n, Number* x_l, Number* x_u,
 
     // Initial conditions
     for (Index i=0; i<m_ncells; i++){
-        g_l[2*m_ncells*m_n_segments + m_n_control_points + i] = g_u[2*m_ncells*m_n_segments + m_n_control_points + i] = m_init_state[get_s_index(0, i)];
-        g_l[m_ncells*(2*m_n_segments + 1) + m_n_control_points + i] = g_u[m_ncells*(2*m_n_segments + 1) + m_n_control_points + i] = m_init_state[get_i_index(0, i)];
+        g_l[2*m_ncells*m_n_segments + m_n_control_points + i] = g_u[2*m_ncells*m_n_segments + m_n_control_points + i] = m_init_state[4*i];
+        g_l[m_ncells*(2*m_n_segments + 1) + m_n_control_points + i] = g_u[m_ncells*(2*m_n_segments + 1) + m_n_control_points + i] = m_init_state[1+4*i];
     }
 
     // std::cout << "Finished get_bounds_info" << std::endl;
@@ -235,7 +279,7 @@ bool RasterModelMidpoint_NLP::get_starting_point(Index n, bool init_x, Number* x
                 coupling_term = 0.0;
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    coupling_term += kernel(i, *it, m_nrow, m_ncol) * x[get_i_index(k, *it)];
+                    coupling_term += kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * x[get_i_index(k, *it)];
                 }
                 // Next S
                 x[get_s_index(k+1, i)] = std::max(0.0,
@@ -394,7 +438,7 @@ bool RasterModelMidpoint_NLP::eval_g(Index n, const Number* x, bool new_x, Index
             coupling_term = 0.0;
             data = get_connected(i);
             for (it = data.begin(); it != data.end(); ++it){
-                coupling_term += kernel(i, *it, m_nrow, m_ncol) * 0.5 * (x[get_i_index(k, *it)] + x[get_i_index(k+1, *it)]);
+                coupling_term += kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * 0.5 * (x[get_i_index(k, *it)] + x[get_i_index(k+1, *it)]);
             }
 
             // S constraint
@@ -410,6 +454,11 @@ bool RasterModelMidpoint_NLP::eval_g(Index n, const Number* x, bool new_x, Index
                 m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * coupling_term
                 - m_control_rate * 0.5 * (x[get_v_index(k, i)] + x[get_v_index(k+1, i)]) * 0.5 *
                 (x[get_i_index(k, i)] + x[get_i_index(k+1, i)])) * m_time_step;
+            // g[acc_idx] = x[get_i_index(k+1, i)] - x[get_i_index(k, i)] - (
+            //     m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * coupling_term
+            //     - m_control_rate * 0.5 * (
+            //         x[get_u_index(k, i)] + x[get_u_index(k+1, i)] + 0.75 * x[get_v_index(k, i)] + 0.75 * x[get_v_index(k+1, i)]) * 0.5 *
+            //     (x[get_i_index(k, i)] + x[get_i_index(k+1, i)])) * m_time_step;
             acc_idx += 1;
         }
     }
@@ -503,6 +552,14 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     jCol[count] = get_i_index(k+1, *it);
                     count++;
                 }
+                // new:
+                // iRow[count] = constraint_count;
+                // jCol[count] = get_u_index(k, i);
+                // count++;
+                // iRow[count] = constraint_count;
+                // jCol[count] = get_u_index(k+1, i);
+                // count++;
+
                 iRow[count] = constraint_count;
                 jCol[count] = get_v_index(k, i);
                 count++;
@@ -564,7 +621,7 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 coupling_term = 0.0;
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    coupling_term += kernel(i, *it, m_nrow, m_ncol) * 0.5 * (x[get_i_index(k, *it)] + x[get_i_index(k+1, *it)]);
+                    coupling_term += kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * 0.5 * (x[get_i_index(k, *it)] + x[get_i_index(k+1, *it)]);
                 }
 
                 // S continuity constraints
@@ -574,7 +631,7 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 values[count] = values[count-1] + 2;
                 count++;
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = 0.5 * m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
+                    values[count] = 0.5 * m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * m_time_step;
                     count++;
                     values[count] = values[count-1];
                     count++;
@@ -590,7 +647,7 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                 values[count] = values[count-1];
                 count++;
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = -0.5 * m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * kernel(i, *it, m_nrow, m_ncol) * m_time_step;
+                    values[count] = -0.5 * m_beta * 0.5 * (x[get_s_index(k, i)] + x[get_s_index(k+1, i)]) * kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * m_time_step;
                     if (i == *it){
                         values[count] -= 1.0;
                         values[count] += 0.25 * (x[get_v_index(k, i)] + x[get_v_index(k+1, i)]) * m_control_rate * m_time_step;
@@ -602,6 +659,12 @@ bool RasterModelMidpoint_NLP::eval_jac_g(Index n, const Number* x, bool new_x,
                     }
                     count++;
                 }
+                // new
+                // values[count] = 0.25 * m_control_rate * (x[get_i_index(k, i)] + x[get_i_index(k+1, i)]) * m_time_step;
+                // count++;
+                // values[count] = values[count-1];
+                // count++;
+
                 values[count] = 0.25 * m_control_rate * (x[get_i_index(k, i)] + x[get_i_index(k+1, i)]) * m_time_step;
                 count++;
                 values[count] = values[count-1];
@@ -734,6 +797,40 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
                     jCol[count] = get_s_index(k, i);
                     count++;
                 }
+                // new:
+                // if (get_u_index(k, i) <= get_i_index(k, i)){
+                //     iRow[count] = get_i_index(k, i);
+                //     jCol[count] = get_u_index(k, i);
+                // } else {
+                //     iRow[count] = get_u_index(k, i);
+                //     jCol[count] = get_i_index(k, i);
+                // }
+                // count++;
+                // if (get_u_index(k, i) <= get_i_index(k+1, i)){
+                //     iRow[count] = get_i_index(k+1, i);
+                //     jCol[count] = get_u_index(k, i);
+                // } else {
+                //     iRow[count] = get_u_index(k, i);
+                //     jCol[count] = get_i_index(k+1, i);
+                // }
+                // count++;
+                // if (get_u_index(k+1, i) <= get_i_index(k, i)){
+                //     iRow[count] = get_i_index(k, i);
+                //     jCol[count] = get_u_index(k+1, i);
+                // } else {
+                //     iRow[count] = get_u_index(k+1, i);
+                //     jCol[count] = get_i_index(k, i);
+                // }
+                // count++;
+                // if (get_u_index(k+1, i) <= get_i_index(k+1, i)){
+                //     iRow[count] = get_i_index(k+1, i);
+                //     jCol[count] = get_u_index(k+1, i);
+                // } else {
+                //     iRow[count] = get_u_index(k+1, i);
+                //     jCol[count] = get_i_index(k+1, i);
+                // }
+                // count++;
+
                 if (get_v_index(k, i) <= get_i_index(k, i)){
                     iRow[count] = get_i_index(k, i);
                     jCol[count] = get_v_index(k, i);
@@ -785,7 +882,7 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
                 // S continuity constraints
                 data = get_connected(i);
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;;
+                    values[count] = lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * m_time_step;;
                     count++;
                     values[count] = values[count-1];
                     count++;
@@ -806,7 +903,7 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
 
                 // I continuity constraints
                 for (it = data.begin(); it != data.end(); ++it){
-                    values[count] = -lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol) * m_time_step;;
+                    values[count] = -lambda[constraint_count] * 0.25 * m_beta * kernel(i, *it, m_nrow, m_ncol, m_susceptibility[i], m_infectiousness[*it], m_scale) * m_time_step;;
                     count++;
                     values[count] = values[count-1];
                     count++;
@@ -815,6 +912,16 @@ bool RasterModelMidpoint_NLP::eval_h(Index n, const Number* x, bool new_x,
                     values[count] = values[count-1];
                     count++;
                 }
+                // new:
+                // values[count] = lambda[constraint_count] * 0.25 * m_control_rate * m_time_step;
+                // count++;
+                // values[count] = values[count-1];
+                // count++;
+                // values[count] = values[count-1];
+                // count++;
+                // values[count] = values[count-1];
+                // count++;
+
                 values[count] = lambda[constraint_count] * 0.25 * m_control_rate * m_time_step;
                 count++;
                 values[count] = values[count-1];

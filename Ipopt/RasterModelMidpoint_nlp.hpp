@@ -1,4 +1,5 @@
 #include "IpTNLP.hpp"
+#include "Config.hpp"
 
 using namespace Ipopt;
 
@@ -10,19 +11,24 @@ class RasterModelMidpoint_NLP : public TNLP
 {
 public:
     /** default constructor */
-    RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
-                            std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip);
+    RasterModelMidpoint_NLP(Config config, int nrow, int ncol, std::vector<double> &init_state,
+                            std::vector<double> &obj_weights, std::vector<double> &susceptibility,
+                            std::vector<double> &infectiousness);
+    // RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+    //                         std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip,
+    //                         std::vector<double> &susceptibility, std::vector<double> &infectiousness);
     
-    /** constructor with warm start point */
-    RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
-                            std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip, std::string start_file_stub);
+    // /** constructor with warm start point */
+    // RasterModelMidpoint_NLP(double beta, double control_rate, double budget, double final_time, int nrow, int ncol, int n_segments,
+    //                         std::vector<double> &init_state, std::vector<double> &obj_weights, int control_skip,
+    //                         std::vector<double> &susceptibility, std::vector<double> &infectiousness, std::string start_file_stub);
 
     /** default destructor */
     virtual ~RasterModelMidpoint_NLP();
 
-    double m_beta, m_control_rate, m_budget, m_final_time, m_time_step;
-    int m_nrow, m_ncol, m_ncells, m_n_segments, m_trunc_dist, m_control_skip, m_n_control_points;
-    std::vector<double> m_init_state;
+    double m_beta, m_control_rate, m_budget, m_final_time, m_time_step, m_scale;
+    int m_nrow, m_ncol, m_ncells, m_n_segments, m_trunc_dist, m_control_skip, m_n_control_points, m_non_spatial, m_control_start;
+    std::vector<double> m_init_state, m_infectiousness, m_susceptibility;
     bool m_warm_start;
     std::string m_start_file_stub;
     std::vector<double> m_obj_weights;
